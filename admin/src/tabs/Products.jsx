@@ -1,25 +1,99 @@
-import React, { useState } from "react";
-import { Search, Plus, Pencil, Trash2 } from "lucide-react";
+import React, { useEffect, useState } from "react";
+import { Search, Plus, Pencil, Trash2, Package, ChevronLeft, ChevronRight } from "lucide-react";
+import AddProduct from "../toolkit/AddProducts";
+import axios from 'axios';
 
-const PRODUCTS = [
-  { name: "Lactomama Tea", variant: "200g", category: "Wellness Tea", price: "\u20B9499", stock: 128, status: "In Stock", color: "#8AA986" },
-  { name: "Stress Balance Oil", variant: "30ml", category: "Essential Oils", price: "\u20B9799", stock: 64, status: "In Stock", color: "#D9C08A" },
-  { name: "Nourishing Drink Mix", variant: "250g", category: "Nutrition", price: "\u20B9599", stock: 12, status: "Low Stock", color: "#C7CFC4" },
-  { name: "Ashwagandha Capsules", variant: "60 Capsules", category: "Supplements", price: "\u20B9699", stock: 0, status: "Out of Stock", color: "#DDB876" },
-  { name: "Turmeric Glow Serum", variant: "15ml", category: "Skin Care", price: "\u20B91,099", stock: 45, status: "In Stock", color: "#C99A6B" },
-  { name: "Digestive Churna", variant: "100g", category: "Wellness", price: "\u20B9349", stock: 8, status: "Low Stock", color: "#9FB08A" },
-];
-
+// Status values now match what the form actually saves (active / draft / archived)
+// instead of the old In Stock / Low Stock placeholders \u2014 needed so the badge
+// column below renders something real instead of blank styling.
 const STATUS_STYLES = {
-  "In Stock": "bg-emerald-50 text-emerald-700",
-  "Low Stock": "bg-amber-50 text-amber-700",
-  "Out of Stock": "bg-red-50 text-red-600",
+  active: "bg-emerald-50 text-emerald-700",
+  draft: "bg-amber-50 text-amber-700",
+  archived: "bg-gray-100 text-gray-500",
 };
 
-export default function Products() {
-  const [query, setQuery] = useState("");
+const STATUS_LABELS = {
+  active: "Active",
+  draft: "Draft",
+  archived: "Archived",
+};
 
-  const filtered = PRODUCTS.filter((p) => p.name.toLowerCase().includes(query.toLowerCase()));
+function formatPrice(value) {
+  const n = Number(value);
+  if (!value || Number.isNaN(n)) return null;
+  return `\u20B9${n.toLocaleString("en-IN")}`;
+}
+
+const PAGE_SIZE = 10;
+
+function getPageNumbers(current, total) {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const pages = new Set([1, 2, current - 1, current, current + 1, total - 1, total]);
+  return [...pages].filter((p) => p >= 1 && p <= total).sort((a, b) => a - b);
+}
+
+export default function Products() {
+  
+const [products, setProducts] = useState([]);
+  const [query, setQuery] = useState("");
+  const [view, setView] = useState("list"); // "list" | "add"
+
+ useEffect(() => {
+   async function getProductData() {
+     try {
+       const response = await axios.get(
+         "http://127.0.0.1:5000/api/product/get/data"
+        );
+        
+        // products.push(response.data);
+        setProducts(response.data.body)
+        // return response.data
+      } catch (error) {
+        console.error(error);
+      }
+    }
+    
+    getProductData();
+    console.log(products)
+  }, []);
+
+  const filtered = products.filter((p) => p.title.toLowerCase().includes(query.toLowerCase()));
+
+  // --- Pagination (new, purely presentational \u2014 doesn't touch the fetch above) ---
+  const [currentPage, setCurrentPage] = useState(1);
+  const [selected, setSelected] = useState([]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [query]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(currentPage, totalPages);
+  const startIndex = (safePage - 1) * PAGE_SIZE;
+  const paginated = filtered.slice(startIndex, startIndex + PAGE_SIZE);
+
+  const allOnPageSelected = paginated.length > 0 && paginated.every((p) => selected.includes(p.title));
+
+  function toggleSelectAllOnPage() {
+    if (allOnPageSelected) {
+      setSelected((prev) => prev.filter((title) => !paginated.some((p) => p.title === title)));
+    } else {
+      setSelected((prev) => [...new Set([...prev, ...paginated.map((p) => p.title)])]);
+    }
+  }
+
+  function toggleSelectRow(title) {
+    setSelected((prev) => (prev.includes(title) ? prev.filter((t) => t !== title) : [...prev, title]));
+  }
+
+  if (view === "add") {
+    return (
+      <AddProduct
+        onCancel={() => setView("list")}
+        onSave={() => setView("list")}
+      />
+    );
+  }
 
   return (
     <div className="flex flex-col gap-5">
@@ -33,49 +107,158 @@ export default function Products() {
             className="w-full rounded-lg border border-gray-200 bg-gray-50 py-2 pl-9 pr-3 text-sm text-gray-700 placeholder:text-gray-400 focus:border-emerald-300 focus:outline-none focus:ring-2 focus:ring-emerald-100"
           />
         </div>
-        <button className="flex items-center justify-center gap-1.5 rounded-lg bg-emerald-800 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-900">
+        <button
+          onClick={() => setView("add")}
+          className="flex items-center justify-center gap-1.5 rounded-lg bg-emerald-800 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-900"
+        >
           <Plus className="h-4 w-4" />
           Add Product
         </button>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {filtered.map((product) => (
-          <div key={product.name} className="rounded-2xl border border-gray-100 bg-white p-4">
-            <div className="flex items-start justify-between">
-              <div
-                className="flex h-12 w-12 items-center justify-center rounded-xl"
-                style={{ backgroundColor: `${product.color}33` }}
-              >
-                <div className="h-6 w-6 rounded-full" style={{ backgroundColor: product.color }} />
-              </div>
-              <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_STYLES[product.status]}`}>
-                {product.status}
-              </span>
-            </div>
+      <div className="overflow-hidden rounded-2xl border border-gray-100 bg-white">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[820px] text-left text-sm">
+            <thead>
+              <tr className="border-b border-gray-100 bg-gray-50/60 text-xs uppercase tracking-wide text-gray-400">
+                <th className="w-10 px-5 py-3">
+                  <input
+                    type="checkbox"
+                    checked={allOnPageSelected}
+                    onChange={toggleSelectAllOnPage}
+                    className="h-4 w-4 rounded border-gray-300 accent-emerald-800"
+                  />
+                </th>
+                <th className="px-3 py-3 font-medium">Product</th>
+                <th className="px-3 py-3 font-medium">Status</th>
+                <th className="px-3 py-3 font-medium">Inventory</th>
+                <th className="px-3 py-3 font-medium">Price</th>
+                <th className="px-3 py-3 font-medium">Tags</th>
+                <th className="px-3 py-3"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {paginated.map((product) => {
+                const status = product.status || "active";
+                const price = formatPrice(product.selling_price);
+                const comparePrice = formatPrice(product.compare_price);
+                return (
+                  <tr key={product.title} className="hover:bg-gray-50/50">
+                    <td className="px-5 py-3.5">
+                      <input
+                        type="checkbox"
+                        checked={selected.includes(product.title)}
+                        onChange={() => toggleSelectRow(product.title)}
+                        className="h-4 w-4 rounded border-gray-300 accent-emerald-800"
+                      />
+                    </td>
+                    <td className="px-3 py-3.5">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-50">
+                          <Package className="h-4 w-4 text-emerald-700" strokeWidth={1.8} />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate font-medium text-gray-800">{product.title}</p>
+                          {product.tagline && (
+                            <p className="truncate text-xs text-gray-400">{product.tagline}</p>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3.5">
+                      <span
+                        className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${
+                          STATUS_STYLES[status] || STATUS_STYLES.active
+                        }`}
+                      >
+                        {STATUS_LABELS[status] || status}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3.5 text-gray-600">{product.quantity ?? 0} in stock</td>
+                    <td className="px-3 py-3.5">
+                      <span className="font-medium text-gray-800">{price || "\u2014"}</span>
+                      {comparePrice && (
+                        <span className="ml-2 text-xs text-gray-400 line-through">{comparePrice}</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-3.5">
+                      <div className="flex flex-wrap gap-1">
+                        {(product.tags || []).slice(0, 2).map((tag) => (
+                          <span
+                            key={tag}
+                            className="rounded-full bg-gray-50 px-2 py-0.5 text-[11px] font-medium text-gray-500"
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="px-3 py-3.5 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <button className="rounded-md p-1.5 text-gray-400 hover:bg-gray-50 hover:text-gray-700">
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                        <button className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500">
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {paginated.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-5 py-10 text-center text-sm text-gray-400">
+                    No products match your search.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
 
-            <p className="mt-3 text-sm font-semibold text-gray-900">{product.name}</p>
-            <p className="text-xs text-gray-400">{product.variant} \u00B7 {product.category}</p>
+        {/* Pagination */}
+        <div className="flex flex-col items-center justify-between gap-3 border-t border-gray-100 px-5 py-3.5 sm:flex-row">
+          <p className="text-xs text-gray-400">
+            {filtered.length === 0
+              ? "Showing 0 products"
+              : `Showing ${startIndex + 1}\u2013${Math.min(startIndex + PAGE_SIZE, filtered.length)} of ${filtered.length} products`}
+          </p>
 
-            <div className="mt-4 flex items-center justify-between border-t border-gray-50 pt-3">
-              <div>
-                <p className="text-sm font-semibold text-gray-800">{product.price}</p>
-                <p className="text-xs text-gray-400">{product.stock} in stock</p>
-              </div>
-              <div className="flex items-center gap-1">
-                <button className="rounded-md p-1.5 text-gray-400 hover:bg-gray-50 hover:text-gray-700">
-                  <Pencil className="h-4 w-4" />
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              disabled={safePage === 1}
+              className="flex h-8 w-8 items-center justify-center rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </button>
+
+            {getPageNumbers(safePage, totalPages).map((page, idx, arr) => (
+              <React.Fragment key={page}>
+                {idx > 0 && page - arr[idx - 1] > 1 && <span className="px-1 text-gray-300">\u2026</span>}
+                <button
+                  onClick={() => setCurrentPage(page)}
+                  className={`flex h-8 w-8 items-center justify-center rounded-md text-xs font-medium ${
+                    page === safePage
+                      ? "bg-emerald-800 text-white"
+                      : "text-gray-600 hover:bg-gray-50"
+                  }`}
+                >
+                  {page}
                 </button>
-                <button className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500">
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
+              </React.Fragment>
+            ))}
+
+            <button
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              disabled={safePage === totalPages}
+              className="flex h-8 w-8 items-center justify-center rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
           </div>
-        ))}
-        {filtered.length === 0 && (
-          <p className="col-span-full py-10 text-center text-sm text-gray-400">No products match your search.</p>
-        )}
+        </div>
       </div>
     </div>
   );

@@ -2,13 +2,13 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
 
-router.get("/tst_users", async (req, res)=>{
+router.get("/product/get/data", async (req, res)=>{
     try{
-        const result = await pool.query("SELECT * FROM tst_data");
+        const result = await pool.query("SELECT * FROM products");
         res.status(200).json({
             success: true,
             count: result.rows.length,
-            data: result.rows,
+            body: result.rows,
         })
     } catch (error) {
         console.error(error);
@@ -19,13 +19,17 @@ router.get("/tst_users", async (req, res)=>{
     }
 })
 
-router.post("/add_users", async (req, res)=>{
+router.post("/product/add/new-product", async (req, res)=>{
     try{
-        const {name, email} = req.body.data[0];
-        const result = await pool.query("INSERT INTO tst_data (name, email) VALUES ($1, $2)", [name, email]);
+        const { id, title, tagline, description, handle, vendor, selling_price, compare_price, quantity, available, status, tags, low_stock_alert } = req.body;
+        const result = await pool.query(
+            `INSERT INTO products 
+                (id, title, tagline, description, handle, vendor, selling_price, compare_price, quantity, available, status, tags, low_stock_alert) 
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+            [id, title, tagline, description, handle, vendor, selling_price, compare_price, quantity, available, status, tags, low_stock_alert]);
         res.status(201).json({
             success: true,
-            message: "User added successfully",
+            message: "Product added successfully",
             data: result.rows[0]
         });
     } catch (error) {
