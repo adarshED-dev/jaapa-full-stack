@@ -1,5 +1,15 @@
-import React, { useState } from "react";
+// SEND Product TO THIS LINK - "http://127.0.0.1:5000/api//product/add/new-product"
+
+
+import React, { useEffect, useState } from "react";
 import axios from 'axios'
+import { useEditor, EditorContent } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import UnderlineExtension from "@tiptap/extension-underline";
+import TextAlign from "@tiptap/extension-text-align";
+import LinkExtension from "@tiptap/extension-link";
+import ImageExtension from "@tiptap/extension-image";
+import Placeholder from "@tiptap/extension-placeholder";
 import {
   ArrowLeft,
   ChevronDown,
@@ -36,12 +46,25 @@ function Card({ title, children, className = "" }) {
   );
 }
 
-function Field({ label, children }) {
+function Field({ label, hint, children }) {
   return (
     <label className="flex flex-col gap-1.5">
       <span className="text-sm font-medium text-gray-700">{label}</span>
       {children}
+      {hint && <span className="text-xs text-gray-400">{hint}</span>}
     </label>
+  );
+}
+
+// For composite fields (rich text editor, tag input) where a real
+// <label> wrapper would cause weird implicit-focus behavior.
+function FieldBlock({ label, hint, children }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-sm font-medium text-gray-700">{label}</span>
+      {children}
+      {hint && <span className="text-xs text-gray-400">{hint}</span>}
+    </div>
   );
 }
 
@@ -50,6 +73,33 @@ const inputClasses =
 
 function TextInput(props) {
   return <input {...props} className={inputClasses} />;
+}
+
+// Strips everything except digits and a single decimal point, and caps
+// input at 2 decimal places \u2014 used for Price / Compare at Price so the
+// field can never hold letters, multiple dots, or a minus sign.
+function sanitizeDecimalInput(raw) {
+  let value = raw.replace(/[^0-9.]/g, "");
+  const firstDot = value.indexOf(".");
+  if (firstDot !== -1) {
+    value = value.slice(0, firstDot + 1) + value.slice(firstDot + 1).replace(/\./g, "");
+  }
+  const parts = value.split(".");
+  if (parts.length > 1) {
+    value = `${parts[0]}.${parts[1].slice(0, 2)}`;
+  }
+  return value;
+}
+
+function PriceInput({ value, onChange, ...props }) {
+  return (
+    <TextInput
+      {...props}
+      inputMode="decimal"
+      value={value}
+      onChange={(e) => onChange(sanitizeDecimalInput(e.target.value))}
+    />
+  );
 }
 
 function SelectField({ placeholder, value, onChange, options = [] }) {
@@ -114,37 +164,200 @@ function RadioOption({ name, value, checked, onChange, title, description }) {
   );
 }
 
+// Tags input: type + Enter/comma to add a chip, click x to remove.
+// Feeds `form.tags` (a plain string array), which buildPayload already
+// reads as `tags: form.tags || null` \u2014 unchanged.
+function TagsInput({ tags, onChange }) {
+  const [draft, setDraft] = useState("");
+
+  function commitDraft() {
+    const value = draft.trim();
+    if (value && !tags.includes(value)) {
+      onChange([...tags, value]);
+    }
+    setDraft("");
+  }
+
+  function handleKeyDown(e) {
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      commitDraft();
+    } else if (e.key === "Backspace" && draft === "" && tags.length > 0) {
+      onChange(tags.slice(0, -1));
+    }
+  }
+
+  function removeTag(index) {
+    onChange(tags.filter((_, i) => i !== index));
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-2 focus-within:border-emerald-300 focus-within:ring-2 focus-within:ring-emerald-100">
+      {tags.map((tag, i) => (
+        <span
+          key={tag}
+          className="flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-800"
+        >
+          {tag}
+          <button
+            type="button"
+            onClick={() => removeTag(i)}
+            className="rounded-full p-0.5 hover:bg-emerald-100"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </span>
+      ))}
+      <input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={handleKeyDown}
+        onBlur={commitDraft}
+        placeholder={tags.length === 0 ? "Add tags and press Enter" : ""}
+        className="min-w-[110px] flex-1 border-none bg-transparent py-0.5 text-sm text-gray-700 placeholder:text-gray-400 focus:outline-none focus:ring-0"
+      />
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
-/* Rich text toolbar (static \u2014 wire up to your editor of choice)       */
+/* Rich text description editor (TipTap)                               */
 /* ------------------------------------------------------------------ */
 
-function DescriptionToolbar() {
-  const iconButton = "rounded-md p-1.5 text-gray-500 hover:bg-gray-100";
+const RICH_TEXT_EXTENSIONS = [
+  StarterKit,
+  UnderlineExtension,
+  TextAlign.configure({ types: ["heading", "paragraph"] }),
+  LinkExtension.configure({
+    openOnClick: false,
+    HTMLAttributes: { class: "text-emerald-700 underline" },
+  }),
+  ImageExtension.configure({ HTMLAttributes: { class: "my-2 max-w-full rounded-lg" } }),
+  Placeholder.configure({ placeholder: "Write product description..." }),
+];
+
+const editorContentClasses =
+  "min-h-[110px] px-3.5 py-3 text-sm text-gray-700 focus:outline-none " +
+  "[&_.ProseMirror]:outline-none " +
+  "[&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 " +
+  "[&_a]:text-emerald-700 [&_a]:underline " +
+  "[&_h1]:text-lg [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold " +
+  "[&_p.is-editor-empty:first-child]:before:content-[attr(data-placeholder)] " +
+  "[&_p.is-editor-empty:first-child]:before:float-left " +
+  "[&_p.is-editor-empty:first-child]:before:h-0 " +
+  "[&_p.is-editor-empty:first-child]:before:text-gray-400 " +
+  "[&_p.is-editor-empty:first-child]:before:pointer-events-none";
+
+function RichTextEditor({ value, onChange }) {
+  const editor = useEditor({
+    extensions: RICH_TEXT_EXTENSIONS,
+    content: value || "",
+    onUpdate: ({ editor }) => onChange(editor.getHTML()),
+    editorProps: {
+      attributes: { class: editorContentClasses },
+    },
+  });
+
+  // Keep the editor in sync if `value` is reset from outside (e.g. form
+  // reset) without fighting the cursor while the user is actively typing.
+  useEffect(() => {
+    if (!editor) return;
+    if (!editor.isFocused && value !== editor.getHTML()) {
+      editor.commands.setContent(value || "", false);
+    }
+  }, [value, editor]);
+
+  if (!editor) return null;
+
+  function setLink() {
+    const previousUrl = editor.getAttributes("link").href || "";
+    const url = window.prompt("Link URL", previousUrl);
+    if (url === null) return;
+    if (url === "") {
+      editor.chain().focus().extendMarkRange("link").unsetLink().run();
+      return;
+    }
+    editor.chain().focus().extendMarkRange("link").setLink({ href: url }).run();
+  }
+
+  function addImage() {
+    const url = window.prompt("Image URL");
+    if (url) editor.chain().focus().setImage({ src: url }).run();
+  }
+
+  function currentBlockType() {
+    if (editor.isActive("heading", { level: 1 })) return "h1";
+    if (editor.isActive("heading", { level: 2 })) return "h2";
+    if (editor.isActive("heading", { level: 3 })) return "h3";
+    return "p";
+  }
+
+  function setBlockType(v) {
+    if (v === "p") editor.chain().focus().setParagraph().run();
+    else editor.chain().focus().toggleHeading({ level: Number(v.slice(1)) }).run();
+  }
+
+  const btn = (active) =>
+    `rounded-md p-1.5 hover:bg-gray-100 ${active ? "bg-emerald-50 text-emerald-700" : "text-gray-500"}`;
+  const inertBtn = "rounded-md p-1.5 text-gray-300 cursor-not-allowed";
+  // Toolbar buttons live inside a form and must not submit / must not
+  // steal focus from the editor selection before their click fires.
+  const noBlur = (e) => e.preventDefault();
+
   return (
-    <div className="flex flex-wrap items-center gap-0.5 border-b border-gray-200 px-2 py-1.5">
-      <button type="button" className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100">
-        Paragraph
-        <ChevronDown className="h-3.5 w-3.5 text-gray-400" />
-      </button>
-      <span className="mx-1 h-4 w-px bg-gray-200" />
-      <button type="button" className={iconButton}><Bold className="h-4 w-4" /></button>
-      <button type="button" className={iconButton}><Italic className="h-4 w-4" /></button>
-      <button type="button" className={iconButton}><Underline className="h-4 w-4" /></button>
-      <span className="mx-1 h-4 w-px bg-gray-200" />
-      <button type="button" className={iconButton}><List className="h-4 w-4" /></button>
-      <button type="button" className={iconButton}><ListOrdered className="h-4 w-4" /></button>
-      <span className="mx-1 h-4 w-px bg-gray-200" />
-      <button type="button" className={iconButton}><AlignLeft className="h-4 w-4" /></button>
-      <button type="button" className={iconButton}><AlignRight className="h-4 w-4" /></button>
-      <span className="mx-1 h-4 w-px bg-gray-200" />
-      <button type="button" className={iconButton}><LinkIcon className="h-4 w-4" /></button>
-      <button type="button" className={iconButton}><ImageIcon className="h-4 w-4" /></button>
-      <button type="button" className="flex items-center gap-1 rounded-md p-1.5 text-gray-500 hover:bg-gray-100">
-        <TableIcon className="h-4 w-4" />
-        <ChevronDown className="h-3 w-3 text-gray-400" />
-      </button>
-      <span className="mx-1 h-4 w-px bg-gray-200" />
-      <button type="button" className={iconButton}><MoreHorizontal className="h-4 w-4" /></button>
+    <div className="overflow-hidden rounded-lg border border-gray-200">
+      <div className="flex flex-wrap items-center gap-0.5 border-b border-gray-200 px-2 py-1.5">
+        <select
+          value={currentBlockType()}
+          onChange={(e) => setBlockType(e.target.value)}
+          className="rounded-md bg-transparent px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 focus:outline-none"
+        >
+          <option value="p">Paragraph</option>
+          <option value="h1">Heading 1</option>
+          <option value="h2">Heading 2</option>
+          <option value="h3">Heading 3</option>
+        </select>
+        <span className="mx-1 h-4 w-px bg-gray-200" />
+        <button type="button" onMouseDown={noBlur} onClick={() => editor.chain().focus().toggleBold().run()} className={btn(editor.isActive("bold"))}>
+          <Bold className="h-4 w-4" />
+        </button>
+        <button type="button" onMouseDown={noBlur} onClick={() => editor.chain().focus().toggleItalic().run()} className={btn(editor.isActive("italic"))}>
+          <Italic className="h-4 w-4" />
+        </button>
+        <button type="button" onMouseDown={noBlur} onClick={() => editor.chain().focus().toggleUnderline().run()} className={btn(editor.isActive("underline"))}>
+          <Underline className="h-4 w-4" />
+        </button>
+        <span className="mx-1 h-4 w-px bg-gray-200" />
+        <button type="button" onMouseDown={noBlur} onClick={() => editor.chain().focus().toggleBulletList().run()} className={btn(editor.isActive("bulletList"))}>
+          <List className="h-4 w-4" />
+        </button>
+        <button type="button" onMouseDown={noBlur} onClick={() => editor.chain().focus().toggleOrderedList().run()} className={btn(editor.isActive("orderedList"))}>
+          <ListOrdered className="h-4 w-4" />
+        </button>
+        <span className="mx-1 h-4 w-px bg-gray-200" />
+        <button type="button" onMouseDown={noBlur} onClick={() => editor.chain().focus().setTextAlign("left").run()} className={btn(editor.isActive({ textAlign: "left" }))}>
+          <AlignLeft className="h-4 w-4" />
+        </button>
+        <button type="button" onMouseDown={noBlur} onClick={() => editor.chain().focus().setTextAlign("right").run()} className={btn(editor.isActive({ textAlign: "right" }))}>
+          <AlignRight className="h-4 w-4" />
+        </button>
+        <span className="mx-1 h-4 w-px bg-gray-200" />
+        <button type="button" onMouseDown={noBlur} onClick={setLink} className={btn(editor.isActive("link"))}>
+          <LinkIcon className="h-4 w-4" />
+        </button>
+        <button type="button" onMouseDown={noBlur} onClick={addImage} className={btn(false)}>
+          <ImageIcon className="h-4 w-4" />
+        </button>
+        <button type="button" disabled title="Not wired up yet" className={inertBtn}>
+          <TableIcon className="h-4 w-4" />
+        </button>
+        <span className="mx-1 h-4 w-px bg-gray-200" />
+        <button type="button" disabled title="Not wired up yet" className={inertBtn}>
+          <MoreHorizontal className="h-4 w-4" />
+        </button>
+      </div>
+
+      <EditorContent editor={editor} />
     </div>
   );
 }
@@ -153,48 +366,91 @@ function DescriptionToolbar() {
 /* Add Product form                                                     */
 /* ------------------------------------------------------------------ */
 
-const CATEGORY_OPTIONS = ["Wellness Tea", "Essential Oils", "Nutrition", "Supplements", "Skin Care"];
-const TYPE_OPTIONS = ["Physical Product", "Digital Product", "Service"];
 const VENDOR_OPTIONS = ["JAAPA", "Third-party Vendor"];
-const COLLECTION_OPTIONS = ["Best Sellers", "New Arrivals", "Ayurvedic Essentials", "Gift Sets"];
 
 async function fetch_product_initial_data(){
   try{
     const response = await axios.get("http://127.0.0.1:5000/api/product/get/data")
-    console.log("an",response.data.body);
   } catch (error) {
     console.error(error)
   }
 }
 fetch_product_initial_data();
 
+/**
+ * Uploads image Files to your Express + Multer endpoint and returns the
+ * URLs it responds with. Not wired into handleSave yet \u2014 see the TODO
+ * there for the one-line change once your route exists.
+ *
+ * Matching Express side (adjust paths/field name to your project):
+ *
+ *   const multer = require("multer");
+ *   const upload = multer({ dest: "uploads/products" });
+ *
+ *   router.post("/upload-images", upload.array("images", 10), (req, res) => {
+ *     const urls = req.files.map((f) => `/uploads/products/${f.filename}`);
+ *     res.json({ urls });
+ *   });
+ *
+ * The field name passed to formData.append() below ("images") MUST match
+ * the field name given to upload.array() on the backend, or Multer will
+ * silently drop the files.
+ */
+async function uploadProductImages(files) {
+  if (!files || files.length === 0) return [];
+
+  const formData = new FormData();
+  files.forEach((file) => formData.append("images", file));
+
+  const response = await axios.post(
+    "http://127.0.0.1:5000/api/product/upload-images",
+    formData,
+    { headers: { "Content-Type": "multipart/form-data" } }
+  );
+
+  return response.data.urls || [];
+}
+
+// title/description/price/compareAtPrice/sku/trackQuantity/quantity/
+// lowStockAlert/status/vendor/tagline/handle/tags \u2014 every one of these
+// is read by buildPayload below. category/productType/collections/
+// costPrice/chargeTax were removed because buildPayload never reads them.
 const INITIAL_FORM = {
   title: "",
+  tagline: "",
   description: "",
+  handle: "",
   price: "",
   compareAtPrice: "",
-  costPrice: "",
-  chargeTax: true,
   sku: "",
   trackQuantity: true,
   quantity: "",
   lowStockAlert: "",
   status: "active",
-  category: "",
-  productType: "",
   vendor: "",
-  collections: "",
+  tags: [],
 };
+
+function slugify(text) {
+  return text
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)+/g, "");
+}
 
 function get_unique_product_id(){
   const product_id = String(Math.floor(Math.random() * (99999999999 - 10000000000 + 1)) + 10000000000);
   return product_id;
 } 
-function buildPayload(form) {
+
+function buildPayload(form, imagePaths) {
   return {
     id: get_unique_product_id(),
     title: form.title,
     tagline: form.tagline,
+    images: imagePaths,
     description: form.description,
     handle: form.handle,
     vendor: form.vendor,
@@ -211,38 +467,82 @@ function buildPayload(form) {
 
 export default function AddProduct({ onCancel, onSave }) {
   const [form, setForm] = useState(INITIAL_FORM);
+  const [handleEdited, setHandleEdited] = useState(false);
   const [images, setImages] = useState([]);
+  const [imagePaths, setImagePaths] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
+
+  async function uploadImages() {
+    const formData = new FormData();
+    images.forEach(file => {
+        formData.append("images", file);
+    });
+    try {
+      console.log("Uploading Images...");
+      console.log(images);
+        const response = await axios.post(
+            "http://localhost:5000/api/product/upload-images",
+            formData
+        );
+        console.log(response);
+        console.log(response.data);
+    } catch (err) {
+        console.error(err);
+    }
+}
+
 
   function update(field, value) {
     setForm((prev) => ({ ...prev, [field]: value }));
   }
 
-  function handleFilesSelected(e) {
-    const files = Array.from(e.target.files || []);
-    setImages((prev) => [...prev, ...files].slice(0, 10));
-    e.target.value = "";
+  function updateTitle(value) {
+    setForm((prev) => ({
+      ...prev,
+      title: value,
+      handle: handleEdited ? prev.handle : slugify(value),
+    }));
   }
+
+  function updateHandle(value) {
+    setHandleEdited(true);
+    update("handle", slugify(value));
+  }
+
+
+
+function handleFilesSelected(e) {
+    const files = Array.from(e.target.files || []);
+    console.log(files);
+    setImages(files);
+    const paths = files.map(file => `/uploads/products/${file.name}`);
+    setImagePaths(paths);
+    e.target.value = "";
+}
 
   function removeImage(index) {
     setImages((prev) => prev.filter((_, i) => i !== index));
   }
 
   async function handleSave() {
+    console.log("handleSave called");
+    await uploadImages();
+    console.log("handleSave Finished");
     setSubmitError(null);
     setSubmitting(true);
     try {
-      // TODO: once you have an upload endpoint, upload `images` first
-      // and merge the returned URLs into the payload below, e.g.:
-      //   const imageUrls = await uploadImages(images);
+      // TODO: once your Multer route is live, swap the line below for:
+      //   const imageUrls = await uploadProductImages(images);
       //   const payload = { ...buildPayload(form), images: imageUrls };
-      const payload = buildPayload(form);
+      const payload = buildPayload(form, imagePaths);
       const created = await createProduct(payload);
       onSave?.(created);
     } catch (err) {
-         const payload = buildPayload(form);
+         const payload = buildPayload(form, imagePaths);
+         const response = await axios.post("http://127.0.0.1:5000/api/product/add/new-product",payload)
          console.log(payload)
+         console.log(response)
       setSubmitError(
         "Something went wrong. Please try again."
       );
@@ -306,22 +606,32 @@ export default function AddProduct({ onCancel, onSave }) {
                 <TextInput
                   placeholder="Enter product title"
                   value={form.title}
-                  onChange={(e) => update("title", e.target.value)}
+                  onChange={(e) => updateTitle(e.target.value)}
                 />
               </Field>
 
-              <Field label="Description">
-                <div className="overflow-hidden rounded-lg border border-gray-200">
-                  <DescriptionToolbar />
-                  <textarea
-                    placeholder="Write product description..."
-                    value={form.description}
-                    onChange={(e) => update("description", e.target.value)}
-                    rows={4}
-                    className="w-full resize-none px-3.5 py-3 text-sm text-gray-700 placeholder:text-gray-400 focus:outline-none"
-                  />
-                </div>
+              <Field label="Tagline">
+                <TextInput
+                  placeholder="A short one-line hook for this product"
+                  value={form.tagline}
+                  onChange={(e) => update("tagline", e.target.value)}
+                />
               </Field>
+
+              <Field label="Handle" hint="Used in the product URL \u2014 auto-filled from the title, editable.">
+                <TextInput
+                  placeholder="product-handle"
+                  value={form.handle}
+                  onChange={(e) => updateHandle(e.target.value)}
+                />
+              </Field>
+
+              <FieldBlock label="Description">
+                <RichTextEditor
+                  value={form.description}
+                  onChange={(html) => update("description", html)}
+                />
+              </FieldBlock>
             </div>
           </Card>
 
@@ -359,39 +669,21 @@ export default function AddProduct({ onCancel, onSave }) {
           </Card>
 
           <Card title="Pricing">
-            <div className="flex flex-col gap-5">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                <Field label="Price (\u20B9)">
-                  <TextInput
-                    placeholder="Enter price"
-                    inputMode="decimal"
-                    value={form.price}
-                    onChange={(e) => update("price", e.target.value)}
-                  />
-                </Field>
-                <Field label="Compare at Price (\u20B9)">
-                  <TextInput
-                    placeholder="Enter compare at price"
-                    inputMode="decimal"
-                    value={form.compareAtPrice}
-                    onChange={(e) => update("compareAtPrice", e.target.value)}
-                  />
-                </Field>
-                <Field label="Cost Price (\u20B9)">
-                  <TextInput
-                    placeholder="Enter cost price"
-                    inputMode="decimal"
-                    value={form.costPrice}
-                    onChange={(e) => update("costPrice", e.target.value)}
-                  />
-                </Field>
-              </div>
-
-              <Switch
-                checked={form.chargeTax}
-                onChange={(v) => update("chargeTax", v)}
-                label="Charge tax on this product"
-              />
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Field label="Price (\u20B9)">
+                <PriceInput
+                  placeholder="Enter price"
+                  value={form.price}
+                  onChange={(v) => update("price", v)}
+                />
+              </Field>
+              <Field label="Compare at Price (\u20B9)">
+                <PriceInput
+                  placeholder="Enter compare at price"
+                  value={form.compareAtPrice}
+                  onChange={(v) => update("compareAtPrice", v)}
+                />
+              </Field>
             </div>
           </Card>
 
@@ -467,30 +759,6 @@ export default function AddProduct({ onCancel, onSave }) {
             </div>
           </Card>
 
-          <Card title="Product Category">
-            <div className="flex flex-col gap-3">
-              <SelectField
-                placeholder="Select category"
-                value={form.category}
-                onChange={(e) => update("category", e.target.value)}
-                options={CATEGORY_OPTIONS}
-              />
-              <button type="button" className="flex items-center gap-1.5 text-sm font-medium text-emerald-700 hover:underline">
-                <Plus className="h-4 w-4" />
-                Add New Category
-              </button>
-            </div>
-          </Card>
-
-          <Card title="Product Type">
-            <SelectField
-              placeholder="Select product type"
-              value={form.productType}
-              onChange={(e) => update("productType", e.target.value)}
-              options={TYPE_OPTIONS}
-            />
-          </Card>
-
           <Card title="Vendor / Brand">
             <div className="flex flex-col gap-3">
               <SelectField
@@ -506,13 +774,8 @@ export default function AddProduct({ onCancel, onSave }) {
             </div>
           </Card>
 
-          <Card title="Collections (Optional)">
-            <SelectField
-              placeholder="Select collections"
-              value={form.collections}
-              onChange={(e) => update("collections", e.target.value)}
-              options={COLLECTION_OPTIONS}
-            />
+          <Card title="Tags">
+            <TagsInput tags={form.tags} onChange={(tags) => update("tags", tags)} />
           </Card>
         </div>
       </div>

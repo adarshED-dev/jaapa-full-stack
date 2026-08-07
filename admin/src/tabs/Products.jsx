@@ -158,7 +158,9 @@ const [products, setProducts] = useState([]);
                           <Package className="h-4 w-4 text-emerald-700" strokeWidth={1.8} />
                         </div>
                         <div className="min-w-0">
-                          <p className="truncate font-medium text-gray-800">{product.title}</p>
+                          <a href={`product-edit?id=${product.id}`}>
+                            <p className="truncate font-medium text-gray-800">{product.title}</p>
+                          </a>
                           {product.tagline && (
                             <p className="truncate text-xs text-gray-400">{product.tagline}</p>
                           )}
@@ -195,12 +197,12 @@ const [products, setProducts] = useState([]);
                     </td>
                     <td className="px-3 py-3.5 text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <button className="rounded-md p-1.5 text-gray-400 hover:bg-gray-50 hover:text-gray-700">
+                        <a href={`product-edit?id=${product.id}`} className="rounded-md p-1.5 text-gray-400 hover:bg-gray-50 hover:text-gray-700">
                           <Pencil className="h-4 w-4" />
-                        </button>
-                        <button className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500">
+                        </a>
+                        <a href={`product-delete?id=${product.id  }`} className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500">
                           <Trash2 className="h-4 w-4" />
-                        </button>
+                        </a>
                       </div>
                     </td>
                   </tr>
