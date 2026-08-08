@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
-import { Search, Plus, Pencil, Trash2, Package, ChevronLeft, ChevronRight } from "lucide-react";
+import { Search, Plus, Pencil, Trash2, Package, ChevronLeft, ChevronRight, AlertTriangle, Loader2 } from "lucide-react";
 import AddProduct from "../toolkit/AddProducts";
 import axios from 'axios';
+
 
 // Status values now match what the form actually saves (active / draft / archived)
 // instead of the old In Stock / Low Stock placeholders \u2014 needed so the badge
@@ -32,34 +33,79 @@ function getPageNumbers(current, total) {
   return [...pages].filter((p) => p >= 1 && p <= total).sort((a, b) => a - b);
 }
 
+// Shown when the trash icon is clicked \u2014 nothing is deleted until the
+// user explicitly confirms here.
+function ConfirmDeleteModal({ product, deleting, error, onCancel, onConfirm }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+      <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl">
+        <div className="flex h-11 w-11 items-center justify-center rounded-full bg-red-50">
+          <AlertTriangle className="h-5 w-5 text-red-600" strokeWidth={1.8} />
+        </div>
+        <h2 className="mt-4 text-base font-semibold text-gray-900">Delete product?</h2>
+        <p className="mt-1.5 text-sm text-gray-500">
+          Are you sure you want to delete{" "}
+          <span className="font-medium text-gray-700">{product.title || "this product"}</span>? This
+          can't be undone.
+        </p>
+
+        {error && (
+          <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{error}</p>
+        )}
+
+        <div className="mt-5 flex items-center justify-end gap-2.5">
+          <button
+            onClick={onCancel}
+            disabled={deleting}
+            className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={deleting}
+            className="flex items-center gap-1.5 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {deleting ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Deleting...
+              </>
+            ) : (
+              "Delete"
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Products() {
   
 const [products, setProducts] = useState([]);
   const [query, setQuery] = useState("");
-  const [view, setView] = useState("list"); // "list" | "add"
+  const [view, setView] = useState("list"); // "list" | "add" | "edit"
+  const [editingProduct, setEditingProduct] = useState(null);
 
- useEffect(() => {
-   async function getProductData() {
-     try {
-       const response = await axios.get(
-         "http://127.0.0.1:5000/api/product/get/data"
-        );
-        
-        // products.push(response.data);
-        setProducts(response.data.body)
-        // return response.data
-      } catch (error) {
-        console.error(error);
-      }
+  // Pulled out of the effect so Edit-save and Delete can both call it again
+  // to refresh the list, instead of duplicating the fetch in three places.
+  async function loadProducts() {
+    try {
+      const response = await axios.get("http://127.0.0.1:5000/api/product/get/data");
+      setProducts(response.data.body);
+    } catch (error) {
+      console.error(error);
     }
-    
-    getProductData();
-    console.log(products)
+  }
+
+  useEffect(() => {
+    loadProducts();
   }, []);
 
   const filtered = products.filter((p) => p.title.toLowerCase().includes(query.toLowerCase()));
 
-  // --- Pagination (new, purely presentational \u2014 doesn't touch the fetch above) ---
+  // --- Pagination (purely presentational \u2014 doesn't touch the fetch above) ---
   const [currentPage, setCurrentPage] = useState(1);
   const [selected, setSelected] = useState([]);
 
@@ -86,11 +132,55 @@ const [products, setProducts] = useState([]);
     setSelected((prev) => (prev.includes(title) ? prev.filter((t) => t !== title) : [...prev, title]));
   }
 
+  // --- Delete confirmation ---
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
+
+  async function confirmDelete() {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await axios.delete(`http://127.0.0.1:5000/api/product/delete/${deleteTarget.id}`);
+      setDeleteTarget(null);
+      loadProducts();
+    } catch (err) {
+      console.error(err);
+      setDeleteError(
+        err.response
+          ? `Server responded with ${err.response.status}.`
+          : "Couldn't reach the server. Please try again."
+      );
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   if (view === "add") {
     return (
       <AddProduct
         onCancel={() => setView("list")}
-        onSave={() => setView("list")}
+        onSave={() => {
+          setView("list");
+          loadProducts();
+        }}
+      />
+    );
+  }
+
+  if (view === "edit") {
+    return (
+      <AddProduct
+        product={editingProduct}
+        onCancel={() => {
+          setView("list");
+          setEditingProduct(null);
+        }}
+        onSave={() => {
+          setView("list");
+          setEditingProduct(null);
+          loadProducts();
+        }}
       />
     );
   }
@@ -154,13 +244,20 @@ const [products, setProducts] = useState([]);
                     </td>
                     <td className="px-3 py-3.5">
                       <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-50">
-                          <Package className="h-4 w-4 text-emerald-700" strokeWidth={1.8} />
+                        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-emerald-50 overflow-hidden">
+                          <img src={product.images[0]} alt="product-image" className="w-full rounder-lg"/>
                         </div>
                         <div className="min-w-0">
-                          <a href={`product-edit?id=${product.id}`}>
-                            <p className="truncate font-medium text-gray-800">{product.title}</p>
-                          </a>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingProduct(product);
+                              setView("edit");
+                            }}
+                            className="truncate text-left font-medium text-gray-800 hover:text-emerald-800 hover:underline"
+                          >
+                            {product.title}
+                          </button>
                           {product.tagline && (
                             <p className="truncate text-xs text-gray-400">{product.tagline}</p>
                           )}
@@ -197,12 +294,26 @@ const [products, setProducts] = useState([]);
                     </td>
                     <td className="px-3 py-3.5 text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <a href={`product-edit?id=${product.id}`} className="rounded-md p-1.5 text-gray-400 hover:bg-gray-50 hover:text-gray-700">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingProduct(product);
+                            setView("edit");
+                          }}
+                          className="rounded-md p-1.5 text-gray-400 hover:bg-gray-50 hover:text-gray-700"
+                        >
                           <Pencil className="h-4 w-4" />
-                        </a>
-                        <a href={`product-delete?id=${product.id  }`} className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500">
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDeleteTarget(product);
+                            setDeleteError(null);
+                          }}
+                          className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500"
+                        >
                           <Trash2 className="h-4 w-4" />
-                        </a>
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -262,6 +373,19 @@ const [products, setProducts] = useState([]);
           </div>
         </div>
       </div>
+
+      {deleteTarget && (
+        <ConfirmDeleteModal
+          product={deleteTarget}
+          deleting={deleting}
+          error={deleteError}
+          onCancel={() => {
+            setDeleteTarget(null);
+            setDeleteError(null);
+          }}
+          onConfirm={confirmDelete}
+        />
+      )}
     </div>
   );
 }

@@ -1,5 +1,6 @@
-// SEND Product TO THIS LINK - "http://127.0.0.1:5000/api//product/add/new-product"
-
+// CREATE -> POST "http://127.0.0.1:5000/api/product/add/new-product"
+// UPDATE -> PUT  "http://127.0.0.1:5000/api/product/update/:id"
+// (adjust these two URLs if your actual Express routes are named differently)
 
 import React, { useEffect, useState } from "react";
 import axios from 'axios'
@@ -30,8 +31,6 @@ import {
   AlertCircle,
   X,
 } from "lucide-react";
-// import { createProduct } from "../lib/products-api";
-// import { ApiError } from "../lib/api";
 
 /* ------------------------------------------------------------------ */
 /* Small reusable form pieces                                          */
@@ -252,14 +251,16 @@ function RichTextEditor({ value, onChange }) {
   const editor = useEditor({
     extensions: RICH_TEXT_EXTENSIONS,
     content: value || "",
+    immediatelyRender: false,
     onUpdate: ({ editor }) => onChange(editor.getHTML()),
     editorProps: {
       attributes: { class: editorContentClasses },
     },
   });
 
-  // Keep the editor in sync if `value` is reset from outside (e.g. form
-  // reset) without fighting the cursor while the user is actively typing.
+  // Keep the editor in sync if `value` is reset from outside (e.g. loading
+  // a different product into the same mounted form) without fighting the
+  // cursor while the user is actively typing.
   useEffect(() => {
     if (!editor) return;
     if (!editor.isFocused && value !== editor.getHTML()) {
@@ -300,8 +301,6 @@ function RichTextEditor({ value, onChange }) {
   const btn = (active) =>
     `rounded-md p-1.5 hover:bg-gray-100 ${active ? "bg-emerald-50 text-emerald-700" : "text-gray-500"}`;
   const inertBtn = "rounded-md p-1.5 text-gray-300 cursor-not-allowed";
-  // Toolbar buttons live inside a form and must not submit / must not
-  // steal focus from the editor selection before their click fires.
   const noBlur = (e) => e.preventDefault();
 
   return (
@@ -363,38 +362,18 @@ function RichTextEditor({ value, onChange }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Add Product form                                                     */
+/* Add / Edit Product form                                              */
 /* ------------------------------------------------------------------ */
 
 const VENDOR_OPTIONS = ["JAAPA", "Third-party Vendor"];
 
-async function fetch_product_initial_data(){
-  try{
-    const response = await axios.get("http://127.0.0.1:5000/api/product/get/data")
-  } catch (error) {
-    console.error(error)
-  }
-}
-fetch_product_initial_data();
-
 /**
  * Uploads image Files to your Express + Multer endpoint and returns the
- * URLs it responds with. Not wired into handleSave yet \u2014 see the TODO
- * there for the one-line change once your route exists.
+ * URLs it responds with. { urls: [...] } is expected back \u2014 adjust if
+ * your route responds with a different shape.
  *
- * Matching Express side (adjust paths/field name to your project):
- *
- *   const multer = require("multer");
- *   const upload = multer({ dest: "uploads/products" });
- *
- *   router.post("/upload-images", upload.array("images", 10), (req, res) => {
- *     const urls = req.files.map((f) => `/uploads/products/${f.filename}`);
- *     res.json({ urls });
- *   });
- *
- * The field name passed to formData.append() below ("images") MUST match
- * the field name given to upload.array() on the backend, or Multer will
- * silently drop the files.
+ * Field name "images" below MUST match upload.array("images", 10) on the
+ * Express side, or Multer silently drops every file.
  */
 async function uploadProductImages(files) {
   if (!files || files.length === 0) return [];
@@ -413,8 +392,7 @@ async function uploadProductImages(files) {
 
 // title/description/price/compareAtPrice/sku/trackQuantity/quantity/
 // lowStockAlert/status/vendor/tagline/handle/tags \u2014 every one of these
-// is read by buildPayload below. category/productType/collections/
-// costPrice/chargeTax were removed because buildPayload never reads them.
+// is read by buildPayload below.
 const INITIAL_FORM = {
   title: "",
   tagline: "",
@@ -431,6 +409,72 @@ const INITIAL_FORM = {
   tags: [],
 };
 
+const EMPTY_VARIANT = {
+  title: "",
+  sku: "",
+  price: "",
+  compareAtPrice: "",
+  quantity: "",
+  image: "",
+  available: true,
+};
+
+function VariantsEditor({ variants, onChange, defaultPrice }) {
+  function updateVariant(index, field, value) {
+    onChange(variants.map((variant, i) => i === index ? { ...variant, [field]: value } : variant));
+  }
+
+  function addVariant() {
+    onChange([...variants, { ...EMPTY_VARIANT, price: defaultPrice || "" }]);
+  }
+
+  return (
+    <Card title="Variants">
+      <p className="mb-4 text-xs text-gray-400">Add options such as 250 g, 500 g, or Red / Large. Each variant can have its own price and inventory.</p>
+      <div className="flex flex-col gap-4">
+        {variants.map((variant, index) => (
+          <div key={index} className="rounded-xl border border-gray-100 bg-gray-50/50 p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-sm font-medium text-gray-700">Variant {index + 1}</p>
+              <button type="button" onClick={() => onChange(variants.filter((_, i) => i !== index))} className="text-xs font-medium text-red-500 hover:underline">Remove</button>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field label="Variant name"><TextInput placeholder="e.g. 250 g" value={variant.title} onChange={(e) => updateVariant(index, "title", e.target.value)} /></Field>
+              <Field label="SKU"><TextInput placeholder="Optional SKU" value={variant.sku} onChange={(e) => updateVariant(index, "sku", e.target.value)} /></Field>
+              <Field label="Price (₹)"><PriceInput value={variant.price} onChange={(value) => updateVariant(index, "price", value)} placeholder="Enter price" /></Field>
+              <Field label="Compare at Price (₹)"><PriceInput value={variant.compareAtPrice} onChange={(value) => updateVariant(index, "compareAtPrice", value)} placeholder="Optional" /></Field>
+              <Field label="Quantity"><TextInput inputMode="numeric" value={variant.quantity} onChange={(e) => updateVariant(index, "quantity", e.target.value)} placeholder="Enter quantity" /></Field>
+              <Field label="Image URL"><TextInput value={variant.image} onChange={(e) => updateVariant(index, "image", e.target.value)} placeholder="Optional image URL" /></Field>
+            </div>
+            <div className="mt-3"><Switch checked={variant.available} onChange={(value) => updateVariant(index, "available", value)} label="Available for sale" /></div>
+          </div>
+        ))}
+        <button type="button" onClick={addVariant} className="flex w-fit items-center gap-1.5 text-sm font-medium text-emerald-700 hover:underline"><Plus className="h-4 w-4" /> Add Variant</button>
+      </div>
+    </Card>
+  );
+}
+
+// Reverse of buildPayload \u2014 turns a product fetched from the API back
+// into the shape this form's state uses, so the Edit form opens pre-filled.
+function productToForm(product) {
+  return {
+    title: product.title || "",
+    tagline: product.tagline || "",
+    description: product.description || "",
+    handle: product.handle || "",
+    price: product.selling_price != null ? String(product.selling_price) : "",
+    compareAtPrice: product.compare_price != null ? String(product.compare_price) : "",
+    sku: product.sku || "",
+    trackQuantity: product.quantity != null,
+    quantity: product.quantity != null ? String(product.quantity) : "",
+    lowStockAlert: product.low_stock_alert != null ? String(product.low_stock_alert) : "",
+    status: product.status || "active",
+    vendor: product.vendor || "",
+    tags: Array.isArray(product.tags) ? product.tags : [],
+  };
+}
+
 function slugify(text) {
   return text
     .toString()
@@ -445,9 +489,11 @@ function get_unique_product_id(){
   return product_id;
 } 
 
-function buildPayload(form, imagePaths) {
+// `existingId` is passed when editing, so updating a product keeps its
+// original id instead of minting a new one.
+function buildPayload(form, imagePaths, existingId) {
   return {
-    id: get_unique_product_id(),
+    id: existingId || get_unique_product_id(),
     title: form.title,
     tagline: form.tagline,
     images: imagePaths,
@@ -465,33 +511,35 @@ function buildPayload(form, imagePaths) {
   };
 }
 
-export default function AddProduct({ onCancel, onSave }) {
-  const [form, setForm] = useState(INITIAL_FORM);
-  const [handleEdited, setHandleEdited] = useState(false);
-  const [images, setImages] = useState([]);
-  const [imagePaths, setImagePaths] = useState([]);
+/**
+ * `product` is optional. Pass nothing to create a new product; pass an
+ * existing product object (from the list) to edit it \u2014 the form
+ * pre-fills from it and Save calls the update endpoint instead of create.
+ */
+export default function AddProduct({ onCancel, onSave, product }) {
+  const isEditMode = Boolean(product);
+
+  const [form, setForm] = useState(() => (product ? productToForm(product) : INITIAL_FORM));
+  const [handleEdited, setHandleEdited] = useState(isEditMode); // don't auto-slugify over an existing handle
+  const [existingImages, setExistingImages] = useState(
+    Array.isArray(product?.images) ? product.images : []
+  );
+  const [images, setImages] = useState([]); // newly selected File objects, not yet uploaded
+  const [variants, setVariants] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
 
-  async function uploadImages() {
-    const formData = new FormData();
-    images.forEach(file => {
-        formData.append("images", file);
-    });
-    try {
-      console.log("Uploading Images...");
-      console.log(images);
-        const response = await axios.post(
-            "http://localhost:5000/api/product/upload-images",
-            formData
-        );
-        console.log(response);
-        console.log(response.data);
-    } catch (err) {
-        console.error(err);
-    }
-}
-
+  useEffect(() => {
+    if (!product?.id) return;
+    axios.get(`http://127.0.0.1:5000/api/product/${product.id}/variants`)
+      .then((response) => setVariants((response.data.variants || []).map((variant) => ({
+        title: variant.title || "", sku: variant.sku || "", price: String(variant.selling_price ?? ""),
+        compareAtPrice: variant.compare_price != null ? String(variant.compare_price) : "",
+        quantity: variant.quantity != null ? String(variant.quantity) : "", image: variant.image || "",
+        available: variant.available !== false,
+      }))))
+      .catch((error) => console.error(error));
+  }, [product?.id]);
 
   function update(field, value) {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -510,46 +558,55 @@ export default function AddProduct({ onCancel, onSave }) {
     update("handle", slugify(value));
   }
 
-
-
-function handleFilesSelected(e) {
+  function handleFilesSelected(e) {
     const files = Array.from(e.target.files || []);
-    console.log(files);
-    setImages(files);
-    const paths = files.map(file => `/uploads/products/${file.name}`);
-    setImagePaths(paths);
+    setImages((prev) => [...prev, ...files].slice(0, 10));
     e.target.value = "";
-}
+  }
 
-  function removeImage(index) {
+  function removeNewImage(index) {
     setImages((prev) => prev.filter((_, i) => i !== index));
   }
 
+  function removeExistingImage(index) {
+    setExistingImages((prev) => prev.filter((_, i) => i !== index));
+  }
+
   async function handleSave() {
-    console.log("handleSave called");
-    await uploadImages();
-    console.log("handleSave Finished");
     setSubmitError(null);
     setSubmitting(true);
     try {
-      // TODO: once your Multer route is live, swap the line below for:
-      //   const imageUrls = await uploadProductImages(images);
-      //   const payload = { ...buildPayload(form), images: imageUrls };
-      const payload = buildPayload(form, imagePaths);
-      const created = await createProduct(payload);
-      onSave?.(created);
+      const uploadedUrls = images.length > 0 ? await uploadProductImages(images) : [];
+      const finalImages = [...existingImages, ...uploadedUrls];
+      const payload = buildPayload(form, finalImages, product?.id);
+
+      const response = isEditMode
+        ? await axios.put(`http://127.0.0.1:5000/api/product/update/${product.id}`, payload)
+        : await axios.post("http://127.0.0.1:5000/api/product/add/new-product", payload);
+
+      const variantPayload = variants
+        .filter((variant) => variant.title.trim())
+        .map((variant) => ({
+          title: variant.title.trim(), sku: variant.sku.trim(), selling_price: Number(variant.price) || 0,
+          compare_price: variant.compareAtPrice ? Number(variant.compareAtPrice) : null,
+          quantity: variant.quantity === "" ? null : Number(variant.quantity) || 0,
+          image: variant.image.trim(), available: variant.available,
+        }));
+      await axios.put(`http://127.0.0.1:5000/api/product/${product?.id || payload.id}/variants`, { variants: variantPayload });
+
+      onSave?.(response.data);
     } catch (err) {
-         const payload = buildPayload(form, imagePaths);
-         const response = await axios.post("http://127.0.0.1:5000/api/product/add/new-product",payload)
-         console.log(payload)
-         console.log(response)
+      console.error(err);
       setSubmitError(
-        "Something went wrong. Please try again."
+        err.response
+          ? `Server responded with ${err.response.status}.`
+          : "Couldn't reach the server. Please try again."
       );
     } finally {
       setSubmitting(false);
     }
   }
+
   return (
     <div className="flex flex-col gap-5">
       {/* Top action bar */}
@@ -559,7 +616,7 @@ function handleFilesSelected(e) {
           className="flex items-center gap-2 text-lg font-semibold text-gray-900 hover:text-gray-600 sm:text-xl"
         >
           <ArrowLeft className="h-5 w-5 text-gray-500" />
-          Add Product
+          {isEditMode ? "Edit Product" : "Add Product"}
         </button>
 
         <div className="flex items-center gap-2.5">
@@ -578,11 +635,11 @@ function handleFilesSelected(e) {
             {submitting ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Saving...
+                {isEditMode ? "Saving..." : "Saving..."}
               </>
             ) : (
               <>
-                Save Product
+                {isEditMode ? "Update Product" : "Save Product"}
                 <ChevronDown className="h-4 w-4" />
               </>
             )}
@@ -647,24 +704,52 @@ function handleFilesSelected(e) {
               <p className="text-xs text-gray-400">You can upload up to 10 images</p>
             </label>
 
-            {images.length > 0 && (
-              <ul className="mt-3 flex flex-col gap-1.5">
-                {images.map((file, i) => (
-                  <li
-                    key={`${file.name}-${i}`}
-                    className="flex items-center justify-between gap-2 rounded-lg border border-gray-100 bg-gray-50/60 px-3 py-2 text-xs text-gray-600"
-                  >
-                    <span className="truncate">{file.name}</span>
-                    <button
-                      type="button"
-                      onClick={() => removeImage(i)}
-                      className="shrink-0 rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700"
+            {existingImages.length > 0 && (
+              <div className="mt-3">
+                <p className="mb-1.5 text-xs font-medium text-gray-500">Current images</p>
+                <ul className="flex flex-col gap-1.5">
+                  {existingImages.map((url, i) => (
+                    <li
+                      key={`${url}-${i}`}
+                      className="flex items-center justify-between gap-2 rounded-lg border border-gray-100 bg-gray-50/60 px-3 py-2 text-xs text-gray-600"
                     >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
+                      <span className="truncate">{url}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeExistingImage(i)}
+                        className="shrink-0 rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {images.length > 0 && (
+              <div className="mt-3">
+                {existingImages.length > 0 && (
+                  <p className="mb-1.5 text-xs font-medium text-gray-500">New images to upload</p>
+                )}
+                <ul className="flex flex-col gap-1.5">
+                  {images.map((file, i) => (
+                    <li
+                      key={`${file.name}-${i}`}
+                      className="flex items-center justify-between gap-2 rounded-lg border border-gray-100 bg-gray-50/60 px-3 py-2 text-xs text-gray-600"
+                    >
+                      <span className="truncate">{file.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeNewImage(i)}
+                        className="shrink-0 rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
           </Card>
 
@@ -726,6 +811,8 @@ function handleFilesSelected(e) {
               </div>
             </div>
           </Card>
+
+          <VariantsEditor variants={variants} onChange={setVariants} defaultPrice={form.price} />
         </div>
 
         {/* Right column */}
