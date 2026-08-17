@@ -2,6 +2,8 @@ const express = require("express");
 const { randomUUID } = require("crypto");
 const router = express.Router();
 const pool = require("../config/db");
+const { requireCustomer } = require("../middleware/requireCustomer");
+const { requireAdmin } = require("../middleware/requireAdmin");
 
 function parseQuantity(value) {
     const quantity = Number(value);
@@ -54,7 +56,7 @@ router.post("/", async (req, res) => {
 
 // Admin listing for anonymous carts. Customer details are intentionally not
 // included because anonymous carts do not have an account/contact attached.
-router.get("/admin/list", async (req, res) => {
+router.get("/admin/list", requireAdmin, async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT
@@ -86,7 +88,7 @@ router.get("/admin/list", async (req, res) => {
     }
 });
 
-router.delete("/admin/:cartId", async (req, res) => {
+router.delete("/admin/:cartId", requireAdmin, async (req, res) => {
     try {
         const result = await pool.query(
             "DELETE FROM carts WHERE id = $1 RETURNING id",
@@ -105,6 +107,82 @@ router.delete("/admin/:cartId", async (req, res) => {
     } catch (error) {
         console.error(error);
         res.status(500).json({ success: false, message: "Unable to delete cart" });
+    }
+});
+
+/* ------------------------------------------------------------------ */
+/* Account-linked carts                                                */
+/* ------------------------------------------------------------------ */
+
+/** The signed-in customer's active cart, created on first use. */
+async function findOrCreateCustomerCart(client, customerId) {
+    const existing = await client.query(
+        "SELECT id FROM carts WHERE customer_id = $1 AND status = 'active'",
+        [customerId]
+    );
+    if (existing.rows.length > 0) return existing.rows[0].id;
+
+    const id = randomUUID();
+    await client.query("INSERT INTO carts (id, customer_id) VALUES ($1, $2)", [id, customerId]);
+    return id;
+}
+
+// GET /api/cart/mine — the cart that follows the account rather than the
+// browser, so it's still there on another device.
+router.get("/mine", requireCustomer, async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const id = await findOrCreateCustomerCart(client, req.customer.id);
+        res.json({ success: true, cart: await getCartWithItems(id) });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: "Unable to load your cart" });
+    } finally {
+        client.release();
+    }
+});
+
+// POST /api/cart/claim { cartId } — called right after sign-in, so a cart
+// filled as a guest survives logging in.
+router.post("/claim", requireCustomer, async (req, res) => {
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const targetId = await findOrCreateCustomerCart(client, req.customer.id);
+        const sourceId = req.body.cartId || null;
+
+        if (sourceId && sourceId !== targetId) {
+            const source = await client.query(
+                "SELECT id FROM carts WHERE id = $1 AND customer_id IS NULL AND status = 'active'",
+                [sourceId]
+            );
+
+            if (source.rows.length > 0) {
+                // GREATEST, not a sum: signing in twice with 2 in the guest
+                // cart should leave 2, not 4. Taking the larger of the two
+                // also means nothing a shopper deliberately added is lost.
+                await client.query(
+                    `INSERT INTO cart_items (cart_id, product_id, quantity, created_at, updated_at)
+                     SELECT $1, product_id, quantity, created_at, updated_at
+                     FROM cart_items WHERE cart_id = $2
+                     ON CONFLICT (cart_id, product_id)
+                     DO UPDATE SET quantity = GREATEST(cart_items.quantity, EXCLUDED.quantity),
+                                   updated_at = CURRENT_TIMESTAMP`,
+                    [targetId, sourceId]
+                );
+                await client.query("DELETE FROM carts WHERE id = $1", [sourceId]);
+            }
+        }
+
+        await client.query("COMMIT");
+        res.json({ success: true, cart: await getCartWithItems(targetId) });
+    } catch (error) {
+        try { await client.query("ROLLBACK"); } catch { /* connection already gone */ }
+        console.error(error);
+        res.status(500).json({ success: false, message: "Unable to link your cart" });
+    } finally {
+        client.release();
     }
 });
 

@@ -3,22 +3,55 @@ const router = express.Router();
 
 const upload = require("../middleware/upload");
 const pool = require("../config/db");
+const { publicUploadUrl } = require("../services/uploadUrl");
+const { requireAdmin } = require("../middleware/requireAdmin");
 
-router.post(
-    "/upload-images",
-    upload.array("images",10),
-    (req,res)=>{
+router.post("/upload-images", requireAdmin, (req, res) => {
+    upload.array("images", 10)(req, res, (error) => {
+        if (error) {
+            return res.status(400).json({ success: false, message: error.message });
+        }
+
         const urls = (req.files || []).map((file) =>
-            `${req.protocol}://${req.get("host")}/uploads/products/${encodeURIComponent(file.filename)}`
+            publicUploadUrl("products", file.filename)
         );
 
         res.json({
             success: true,
             urls,
         });
+    });
+});
 
+// Admin dashboard's low-stock panel. A product opts in by having
+// low_stock_alert set at all — NULL (the default) means "don't alert on
+// this one", and the comparison naturally excludes it (NULL <= anything is
+// unknown in SQL, so those rows never match).
+router.get("/alerts/low-stock", requireAdmin, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT id, title, sku, quantity, low_stock_alert, updated_at
+             FROM products
+             WHERE low_stock_alert IS NOT NULL AND quantity <= low_stock_alert
+             ORDER BY quantity ASC, updated_at DESC`
+        );
+
+        res.json({
+            success: true,
+            alerts: result.rows.map((row) => ({
+                id: row.id,
+                title: row.title,
+                sku: row.sku,
+                quantity: row.quantity,
+                lowStockAlert: Number(row.low_stock_alert),
+                updatedAt: row.updated_at,
+            })),
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: "Unable to load low-stock alerts" });
     }
-)
+});
 
 router.get("/:productId/variants", async (req, res) => {
     try {
@@ -34,7 +67,8 @@ router.get("/:productId/variants", async (req, res) => {
     }
 });
 
-router.put("/:productId/variants", async (req, res) => {
+// Admin-only: this rewrites prices and stock, unlike the GET above.
+router.put("/:productId/variants", requireAdmin, async (req, res) => {
     const client = await pool.connect();
     try {
         const variants = Array.isArray(req.body.variants) ? req.body.variants : null;

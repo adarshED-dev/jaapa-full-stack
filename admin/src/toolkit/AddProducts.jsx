@@ -3,7 +3,7 @@
 // (adjust these two URLs if your actual Express routes are named differently)
 
 import React, { useEffect, useState } from "react";
-import axios from 'axios'
+import api from '../lib/api'
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import UnderlineExtension from "@tiptap/extension-underline";
@@ -381,8 +381,8 @@ async function uploadProductImages(files) {
   const formData = new FormData();
   files.forEach((file) => formData.append("images", file));
 
-  const response = await axios.post(
-    "http://127.0.0.1:5000/api/product/upload-images",
+  const response = await api.post(
+    "/product/upload-images",
     formData,
     { headers: { "Content-Type": "multipart/form-data" } }
   );
@@ -531,7 +531,7 @@ export default function AddProduct({ onCancel, onSave, product }) {
 
   useEffect(() => {
     if (!product?.id) return;
-    axios.get(`http://127.0.0.1:5000/api/product/${product.id}/variants`)
+    api.get(`/product/${product.id}/variants`)
       .then((response) => setVariants((response.data.variants || []).map((variant) => ({
         title: variant.title || "", sku: variant.sku || "", price: String(variant.selling_price ?? ""),
         compareAtPrice: variant.compare_price != null ? String(variant.compare_price) : "",
@@ -581,8 +581,8 @@ export default function AddProduct({ onCancel, onSave, product }) {
       const payload = buildPayload(form, finalImages, product?.id);
 
       const response = isEditMode
-        ? await axios.put(`http://127.0.0.1:5000/api/product/update/${product.id}`, payload)
-        : await axios.post("http://127.0.0.1:5000/api/product/add/new-product", payload);
+        ? await api.put(`/product/update/${product.id}`, payload)
+        : await api.post("/product/add/new-product", payload);
 
       const variantPayload = variants
         .filter((variant) => variant.title.trim())
@@ -592,7 +592,7 @@ export default function AddProduct({ onCancel, onSave, product }) {
           quantity: variant.quantity === "" ? null : Number(variant.quantity) || 0,
           image: variant.image.trim(), available: variant.available,
         }));
-      await axios.put(`http://127.0.0.1:5000/api/product/${product?.id || payload.id}/variants`, { variants: variantPayload });
+      await api.put(`/product/${product?.id || payload.id}/variants`, { variants: variantPayload });
 
       onSave?.(response.data);
     } catch (err) {

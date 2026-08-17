@@ -6,6 +6,7 @@ import {
   Package,
   ShoppingCart,
   CreditCard,
+  Newspaper,
   BarChart2,
   FileText,
   Settings as SettingsIcon,
@@ -22,6 +23,12 @@ import {
   X,
 } from "lucide-react";
 
+// The storefront's own dev server (see frontend/vite.config.js). Set
+// VITE_STOREFRONT_URL when the storefront is deployed somewhere other than
+// localhost, so this keeps pointing at the real site instead of :5173.
+const STOREFRONT_URL = import.meta.env.VITE_STOREFRONT_URL || "http://localhost:5173";
+const STOREFRONT_HOST = STOREFRONT_URL.replace(/^https?:\/\//, "");
+
 const NAV_ITEMS = [
   { id: "home", label: "Home", icon: Home },
   { id: "orders", label: "Orders", icon: ShoppingBag },
@@ -29,6 +36,7 @@ const NAV_ITEMS = [
   { id: "products", label: "Products", icon: Package },
   { id: "carts", label: "Carts", icon: ShoppingCart },
   { id: "payments", label: "Payments", icon: CreditCard },
+  { id: "blogs", label: "Blogs", icon: Newspaper },
   { id: "analytics", label: "Analytics", icon: BarChart2 },
   { id: "reports", label: "Reports", icon: FileText },
 ];
@@ -106,7 +114,7 @@ export default function Sidebar({
       )}
 
       <aside
-        className={`fixed inset-y-0 left-0 z-50 flex w-[272px] shrink-0 transform flex-col border-r border-gray-100 bg-white transition-transform duration-200 ease-out lg:static lg:z-auto lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-50 flex h-screen w-[272px] shrink-0 transform flex-col border-r border-gray-100 bg-white transition-transform duration-200 ease-out lg:static lg:z-auto lg:translate-x-0 ${
           mobileOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -173,15 +181,24 @@ export default function Sidebar({
           {/* Store switcher + settings sublinks */}
           {settingsOpen && (
             <div className="mt-3 rounded-xl border border-gray-100 bg-gray-50/70 p-3">
-              <div className="mb-2 flex items-center gap-2.5 rounded-lg bg-white px-2.5 py-2 shadow-sm ring-1 ring-gray-100">
+              <a
+                href={STOREFRONT_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={`Open ${STOREFRONT_URL}`}
+                className="mb-2 flex items-center gap-2.5 rounded-lg bg-white px-2.5 py-2 shadow-sm ring-1 ring-gray-100 transition-colors hover:bg-gray-50"
+              >
                 <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-emerald-100 text-xs font-semibold text-emerald-800">
                   J
                 </div>
-                <span className="flex-1 truncate text-sm font-medium text-gray-800">
-                  JAAPA Store
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-gray-800">
+                    JAAPA Store
+                  </span>
+                  <span className="block truncate text-xs text-gray-400">{STOREFRONT_HOST}</span>
                 </span>
                 <ExternalLink className="h-3.5 w-3.5 shrink-0 text-gray-400" />
-              </div>
+              </a>
 
               <div className="flex flex-col gap-0.5">
                 {SETTINGS_SUBLINKS.map((item) => {

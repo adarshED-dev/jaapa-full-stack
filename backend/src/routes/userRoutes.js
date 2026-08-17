@@ -1,6 +1,10 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../config/db");
+const { requireAdmin } = require("../middleware/requireAdmin");
+
+// Reading the catalog stays public — the storefront needs it. Everything that
+// writes to it is admin-only.
 
 router.get("/product/get/data", async (req, res)=>{
     try{
@@ -35,13 +39,17 @@ router.post("/product/get/order-details", async (req, res)=>{
         });
     }
 })
-router.post("/product/add/new-product", async (req, res)=>{
+router.post("/product/add/new-product", requireAdmin, async (req, res)=>{
     try{
         const { id, title, tagline, description, handle, vendor, selling_price, compare_price, quantity, available, status, tags, low_stock_alert, sku, images } = req.body;
         const result = await pool.query(
-            `INSERT INTO products 
-                (id, title, tagline, description, handle, vendor, selling_price, compare_price, quantity, available, status, tags, low_stock_alert, sku, images) 
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+            // RETURNING * so the response's `data` is the row that was
+            // actually written — without it the admin got `undefined` back
+            // from a successful create.
+            `INSERT INTO products
+                (id, title, tagline, description, handle, vendor, selling_price, compare_price, quantity, available, status, tags, low_stock_alert, sku, images)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+             RETURNING *`,
             [id, title, tagline, description, handle, vendor, selling_price, compare_price, quantity, available, status, tags, low_stock_alert, sku, images ]);
         res.status(201).json({
             success: true,
@@ -57,7 +65,7 @@ router.post("/product/add/new-product", async (req, res)=>{
     }
 })
 
-router.put("/product/update/:id", async (req, res) => {
+router.put("/product/update/:id", requireAdmin, async (req, res) => {
     try {
         const { id } = req.params;
         const {
@@ -135,7 +143,7 @@ router.put("/product/update/:id", async (req, res) => {
     }
 });
 
-router.delete("/product/delete/:id", async (req, res) => {
+router.delete("/product/delete/:id", requireAdmin, async (req, res) => {
     try {
         const { id } = req.params;
         const result = await pool.query(

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ShoppingCart, Loader2, Trash2 } from "lucide-react";
-import axios from "axios";
+import api from "../lib/api";
 
 const STATUS_STYLES = {
   active: "bg-emerald-50 text-emerald-700",
@@ -29,7 +29,7 @@ export default function Carts() {
   useEffect(() => {
     async function loadCarts() {
       try {
-        const response = await axios.get("http://127.0.0.1:5000/api/cart/admin/list");
+        const response = await api.get("/cart/admin/list");
         setCarts(response.data.carts || []);
       } catch (requestError) {
         console.error(requestError);
@@ -48,7 +48,7 @@ export default function Carts() {
     setDeletingId(cartId);
     setError(null);
     try {
-      await axios.delete(`http://127.0.0.1:5000/api/cart/admin/${cartId}`);
+      await api.delete(`/cart/admin/${cartId}`);
       setCarts((currentCarts) => currentCarts.filter((cart) => cart.id !== cartId));
     } catch (requestError) {
       console.error(requestError);

@@ -1,0 +1,14 @@
+node_modules/
+
+# Database password, JWT signing key and Razorpay secrets live here. Anyone
+# who gets this file can mint their own admin token.
+.env
+.env.*
+!.env.example
+
+# uploads/ is intentionally NOT ignored — it currently holds the product and
+# branding images the store is serving. Move it to S3/Cloudinary before
+# deploying and ignore it then.
+
+*.log
+npm-debug.log*

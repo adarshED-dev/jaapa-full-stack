@@ -11,45 +11,58 @@ import {
   ChevronRight,
 } from "lucide-react";
 
+import StoreDetails from "../toolkit/settings/StoreDetails";
+import MetaData from "../toolkit/settings/MetaData";
+import LogoFavicon from "../toolkit/settings/LogoFavicon";
+import GstSettings from "../toolkit/settings/GstSettings";
+import EmailNotifications from "../toolkit/settings/EmailNotifications";
+import Policies from "../toolkit/settings/Policies";
+
+// `component` is the panel rendered for that sidebar sub-link. Sections
+// without one still show on the overview grid, marked as coming soon.
 const SECTIONS = [
-  { id: "store-details", label: "Store Details", description: "Name, address and contact information.", icon: Store },
-  { id: "meta-data", label: "Meta Data (SEO)", description: "Titles, descriptions and social previews.", icon: Tags },
-  { id: "logo-favicon", label: "Logo & Favicon", description: "Brand assets shown across the storefront.", icon: ImageIcon },
-  { id: "gst-settings", label: "GST Settings", description: "Tax rates and GST identification number.", icon: Percent },
-  { id: "email-notifications", label: "Email Notifications", description: "Order, shipping and marketing emails.", icon: Mail },
+  { id: "store-details", label: "Store Details", description: "Name, address and contact information.", icon: Store, component: StoreDetails },
+  { id: "meta-data", label: "Meta Data (SEO)", description: "Titles, descriptions and keywords.", icon: Tags, component: MetaData },
+  { id: "logo-favicon", label: "Logo & Favicon", description: "Brand assets shown across the storefront.", icon: ImageIcon, component: LogoFavicon },
+  { id: "gst-settings", label: "GST Settings", description: "Tax rates, GSTIN and state-wise overrides.", icon: Percent, component: GstSettings },
+  { id: "email-notifications", label: "Email Notifications", description: "Sender address and order emails.", icon: Mail, component: EmailNotifications },
   { id: "domains", label: "Domains", description: "Connect and manage custom domains.", icon: Globe },
-  { id: "policies", label: "Policies", description: "Refund, shipping and privacy policies.", icon: ShieldCheck },
+  { id: "policies", label: "Policies", description: "Refund, shipping and privacy policies.", icon: ShieldCheck, component: Policies },
   { id: "billing", label: "Billing", description: "Plan, invoices and payment method.", icon: Receipt },
 ];
 
 /**
  * `section` corresponds to the settings sub-link id (e.g. "store-details").
- * When empty, the section overview grid is shown.
+ * When empty, the section overview grid is shown; `onNavigate` lets its
+ * cards jump straight into a panel.
  */
-export default function Settings({ section }) {
+export default function Settings({ section, onNavigate }) {
   const active = SECTIONS.find((s) => s.id === section);
+
+  if (active?.component) {
+    const Panel = active.component;
+    return <Panel />;
+  }
 
   if (active) {
     const Icon = active.icon;
     return (
-      <div className="flex flex-col gap-5">
-        <div className="rounded-2xl border border-gray-100 bg-white p-6">
-          <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-50">
-              <Icon className="h-5 w-5 text-emerald-700" strokeWidth={1.9} />
-            </div>
-            <div>
-              <h2 className="text-base font-semibold text-gray-900">{active.label}</h2>
-              <p className="text-sm text-gray-400">{active.description}</p>
-            </div>
+      <div className="rounded-2xl border border-gray-100 bg-white p-6">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-50">
+            <Icon className="h-5 w-5 text-emerald-700" strokeWidth={1.9} />
           </div>
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">{active.label}</h2>
+            <p className="text-sm text-gray-400">{active.description}</p>
+          </div>
+        </div>
 
-          <div className="mt-6 rounded-xl border border-dashed border-gray-200 bg-gray-50/60 p-8 text-center">
-            <p className="text-sm text-gray-500">
-              Build the {active.label.toLowerCase()} form here \u2014 this panel is wired up and
-              ready for your fields and save handler.
-            </p>
-          </div>
+        <div className="mt-6 rounded-xl border border-dashed border-gray-200 bg-gray-50/60 p-8 text-center">
+          <p className="text-sm text-gray-500">
+            {active.label} isn't set up yet — this panel is wired to the sidebar and ready for
+            its fields and save handler.
+          </p>
         </div>
       </div>
     );
@@ -60,6 +73,7 @@ export default function Settings({ section }) {
       {SECTIONS.map((s) => (
         <button
           key={s.id}
+          onClick={() => onNavigate?.(`settings:${s.id}`)}
           className="flex items-center justify-between gap-3 rounded-2xl border border-gray-100 bg-white p-5 text-left hover:border-emerald-200 hover:bg-emerald-50/30"
         >
           <span className="flex items-center gap-3">

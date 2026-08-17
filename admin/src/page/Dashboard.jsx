@@ -8,24 +8,23 @@ import Products from "../tabs/Products";
 import Customers from "../tabs/Customers";
 import Carts from "../tabs/Carts";
 import Payments from "../tabs/Payments";
+import Blogs from "../tabs/Blogs";
 import Analytics from "../tabs/Analytics";
 import Reports from "../tabs/Reports";
 import Settings from "../tabs/Settings";
+import { useAuth } from "../auth/AuthContext";
 
-const CURRENT_USER = {
-  name: "Adarsh Nigam",
-  role: "Administrator",
-  initials: "A",
-};
+const ROLE_LABELS = { owner: "Owner", admin: "Administrator" };
 
 /**
- * Top-level admin dashboard shell.
+ * Top-level admin dashboard shell. test
  *
  * `activeTab` drives which child component renders in the content area.
  * It's either a top-level id ("home", "orders", ...) or, for the
  * expandable Settings entry, a compound id like "settings:store-details".
  */
 export default function Dashboard() {
+  const { admin } = useAuth();
   const [activeTab, setActiveTab] = useState("home");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -38,7 +37,7 @@ export default function Dashboard() {
   function renderContent() {
     if (activeTab.startsWith("settings")) {
       const [, section] = activeTab.split(":");
-      return <Settings section={section} />;
+      return <Settings section={section} onNavigate={handleNavigate} />;
     }
 
     switch (activeTab) {
@@ -54,6 +53,8 @@ export default function Dashboard() {
         return <Carts />;
       case "payments":
         return <Payments />;
+      case "blogs":
+        return <Blogs />;
       case "analytics":
         return <Analytics />;
       case "reports":
@@ -64,7 +65,12 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="flex min-h-screen w-full bg-[#FAFAF8] font-sans text-gray-900 antialiased">
+    // h-screen + overflow-hidden pins the whole shell to the viewport —
+    // Shopify-style: sidebar and header never move, and <main> below is the
+    // only thing that scrolls. This used to be min-h-screen with no overflow
+    // constraint, so a tall table grew the whole page and the *body*
+    // scrolled, carrying the sidebar away with it.
+    <div className="flex h-screen w-full overflow-hidden bg-[#FAFAF8] font-sans text-gray-900 antialiased">
       <Sidebar
         activeTab={activeTab}
         onNavigate={handleNavigate}
@@ -74,13 +80,17 @@ export default function Dashboard() {
         onCloseMobile={() => setMobileNavOpen(false)}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <Header
           activeTab={activeTab}
-          user={CURRENT_USER}
+          user={{
+            name: admin?.fullName || admin?.email || "Owner",
+            role: ROLE_LABELS[admin?.role] || "Administrator",
+            initials: admin?.initials || "?",
+          }}
           onOpenMobileMenu={() => setMobileNavOpen(true)}
         />
-        <main className="flex-1 px-4 pb-8 sm:px-8">{renderContent()}</main>
+        <main className="flex-1 overflow-y-auto px-4 pb-8 sm:px-8">{renderContent()}</main>
       </div>
     </div>
   );

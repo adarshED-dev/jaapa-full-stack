@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Search, Plus, Pencil, Trash2, Package, ChevronLeft, ChevronRight, AlertTriangle, Loader2 } from "lucide-react";
 import AddProduct from "../toolkit/AddProducts";
-import axios from 'axios';
+import api from '../lib/api';
 
 
 // Status values now match what the form actually saves (active / draft / archived)
@@ -25,7 +25,7 @@ function formatPrice(value) {
   return `\u20B9${n.toLocaleString("en-IN")}`;
 }
 
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 5;
 
 function getPageNumbers(current, total) {
   if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
@@ -92,7 +92,7 @@ const [products, setProducts] = useState([]);
   // to refresh the list, instead of duplicating the fetch in three places.
   async function loadProducts() {
     try {
-      const response = await axios.get("http://127.0.0.1:5000/api/product/get/data");
+      const response = await api.get("/product/get/data");
       setProducts(response.data.body);
     } catch (error) {
       console.error(error);
@@ -141,7 +141,7 @@ const [products, setProducts] = useState([]);
     setDeleting(true);
     setDeleteError(null);
     try {
-      await axios.delete(`http://127.0.0.1:5000/api/product/delete/${deleteTarget.id}`);
+      await api.delete(`/product/delete/${deleteTarget.id}`);
       setDeleteTarget(null);
       loadProducts();
     } catch (err) {
