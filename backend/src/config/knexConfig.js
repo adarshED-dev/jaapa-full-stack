@@ -1,17 +1,28 @@
 const path = require("path");
 require("dotenv").config();
+const { DB_TYPE } = require("./dbType");
+
+function defaultPort() {
+    return DB_TYPE === "mysql" ? 3306 : 5432;
+}
 
 function createKnexConfig() {
+    const prefix = DB_TYPE === "mysql" ? "MYSQL_DB" : "POSTGRES_DB";
+    const connection = {
+        host: process.env[`${prefix}_HOST`] || process.env.DB_HOST || "127.0.0.1",
+        port: Number(process.env[`${prefix}_PORT`] || process.env.DB_PORT || defaultPort()),
+        database: process.env[`${prefix}_NAME`] || process.env.DB_NAME,
+        user: process.env[`${prefix}_USER`] || process.env.DB_USER,
+        password: process.env[`${prefix}_PASSWORD`] || process.env.DB_PASSWORD,
+    };
+
+    if (DB_TYPE === "mysql") {
+        connection.charset = "utf8mb4";
+    }
+
     return {
-        client: "mysql2",
-        connection: {
-            host: process.env.DB_HOST || "127.0.0.1",
-            port: Number(process.env.DB_PORT || 3306),
-            database: process.env.DB_NAME,
-            user: process.env.DB_USER,
-            password: process.env.DB_PASSWORD,
-            charset: "utf8mb4",
-        },
+        client: DB_TYPE === "mysql" ? "mysql2" : "pg",
+        connection,
         pool: {
             min: 0,
             max: 10,

@@ -5,12 +5,14 @@ const mysql = require("mysql2/promise");
 const { DB_TYPE } = require("./dbType");
 
 function databaseConfig(defaultPort) {
+    const prefix = DB_TYPE === "mysql" ? "MYSQL_DB" : "POSTGRES_DB";
+
     return {
-        host: process.env.DB_HOST || "127.0.0.1",
-        port: Number(process.env.DB_PORT || defaultPort),
-        database: process.env.DB_NAME,
-        user: process.env.DB_USER,
-        password: process.env.DB_PASSWORD,
+        host: process.env[`${prefix}_HOST`] || process.env.DB_HOST || "127.0.0.1",
+        port: Number(process.env[`${prefix}_PORT`] || process.env.DB_PORT || defaultPort),
+        database: process.env[`${prefix}_NAME`] || process.env.DB_NAME,
+        user: process.env[`${prefix}_USER`] || process.env.DB_USER,
+        password: process.env[`${prefix}_PASSWORD`] || process.env.DB_PASSWORD,
     };
 }
 
@@ -97,6 +99,7 @@ function createMysqlPool() {
         waitForConnections: true,
         connectionLimit: 10,
     });
+
 
     return {
         query(sql, params) {
