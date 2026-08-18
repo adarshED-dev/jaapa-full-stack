@@ -12,6 +12,24 @@ const router = express.Router();
 const pool = require("../config/db");
 const { requireCustomer } = require("../middleware/requireCustomer");
 
+function parseJsonField(value, fallback) {
+    if (value == null) return fallback;
+    if (Array.isArray(value) || typeof value === "object") return value;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return fallback;
+    }
+}
+
+function wishlistItemRow(row) {
+    if (!row) return row;
+    return {
+        ...row,
+        images: parseJsonField(row.images, []),
+    };
+}
+
 async function getWishlistWithItems(wishlistId) {
     const wishlistResult = await pool.query(
         "SELECT id, status, created_at, updated_at FROM wishlists WHERE id = $1",
@@ -35,24 +53,22 @@ async function getWishlistWithItems(wishlistId) {
             p.quantity,
             p.status
          FROM wishlist_items wi
-         JOIN products p ON p.id::text = wi.product_id
+         JOIN products p ON p.id = wi.product_id
          WHERE wi.wishlist_id = $1
          ORDER BY wi.created_at DESC`,
         [wishlistId]
     );
 
-    return { ...wishlistResult.rows[0], items: itemsResult.rows };
+    return { ...wishlistResult.rows[0], items: itemsResult.rows.map(wishlistItemRow) };
 }
 
 router.post("/", async (req, res) => {
     try {
         const id = randomUUID();
-        const result = await pool.query(
-            "INSERT INTO wishlists (id) VALUES ($1) RETURNING id, status, created_at, updated_at",
-            [id]
-        );
+        await pool.query("INSERT INTO wishlists (id) VALUES ($1)", [id]);
+        const wishlist = await getWishlistWithItems(id);
 
-        res.status(201).json({ success: true, wishlist: { ...result.rows[0], items: [] } });
+        res.status(201).json({ success: true, wishlist });
     } catch (error) {
         console.error(error);
         res.status(500).json({ success: false, message: "Unable to create wishlist" });
@@ -112,12 +128,17 @@ router.post("/claim", requireCustomer, async (req, res) => {
             );
 
             if (source.rows.length > 0) {
-                await client.query(
-                    `INSERT INTO wishlist_items (wishlist_id, product_id, created_at)
-                     SELECT $1, product_id, created_at FROM wishlist_items WHERE wishlist_id = $2
-                     ON CONFLICT (wishlist_id, product_id) DO NOTHING`,
-                    [targetId, sourceId]
+                const sourceItems = await client.query(
+                    "SELECT product_id, created_at FROM wishlist_items WHERE wishlist_id = $1",
+                    [sourceId]
                 );
+                for (const item of sourceItems.rows) {
+                    await client.query(
+                        `INSERT IGNORE INTO wishlist_items (wishlist_id, product_id, created_at)
+                         VALUES ($1, $2, $3)`,
+                        [targetId, item.product_id, item.created_at]
+                    );
+                }
                 // Items cascade with it.
                 await client.query("DELETE FROM wishlists WHERE id = $1", [sourceId]);
             }
@@ -164,7 +185,7 @@ router.post("/:wishlistId/items", async (req, res) => {
         // Unlike the cart, an archived or draft product can still be saved —
         // wishing for something that's out of stock is the whole point.
         const productResult = await pool.query(
-            "SELECT id FROM products WHERE id::text = $1",
+            "SELECT id FROM products WHERE id = $1",
             [String(productId)]
         );
         if (productResult.rows.length === 0) {
@@ -174,9 +195,7 @@ router.post("/:wishlistId/items", async (req, res) => {
         // Saving twice is a no-op rather than an error, so a double click on
         // the heart can't 500.
         await pool.query(
-            `INSERT INTO wishlist_items (wishlist_id, product_id)
-             VALUES ($1, $2)
-             ON CONFLICT (wishlist_id, product_id) DO NOTHING`,
+            "INSERT IGNORE INTO wishlist_items (wishlist_id, product_id) VALUES ($1, $2)",
             [req.params.wishlistId, String(productId)]
         );
         await pool.query(
@@ -194,13 +213,18 @@ router.post("/:wishlistId/items", async (req, res) => {
 
 router.delete("/:wishlistId/items/:productId", async (req, res) => {
     try {
-        const result = await pool.query(
-            "DELETE FROM wishlist_items WHERE wishlist_id = $1 AND product_id = $2 RETURNING *",
+        const existing = await pool.query(
+            "SELECT wishlist_id FROM wishlist_items WHERE wishlist_id = $1 AND product_id = $2",
             [req.params.wishlistId, req.params.productId]
         );
-        if (result.rows.length === 0) {
+        if (existing.rows.length === 0) {
             return res.status(404).json({ success: false, message: "Item not in this wishlist" });
         }
+
+        await pool.query(
+            "DELETE FROM wishlist_items WHERE wishlist_id = $1 AND product_id = $2",
+            [req.params.wishlistId, req.params.productId]
+        );
 
         await pool.query(
             "UPDATE wishlists SET updated_at = CURRENT_TIMESTAMP WHERE id = $1",

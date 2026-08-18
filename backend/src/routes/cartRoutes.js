@@ -10,6 +10,24 @@ function parseQuantity(value) {
     return Number.isInteger(quantity) && quantity > 0 ? quantity : null;
 }
 
+function parseJsonField(value, fallback) {
+    if (value == null) return fallback;
+    if (Array.isArray(value) || typeof value === "object") return value;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return fallback;
+    }
+}
+
+function cartItemRow(row) {
+    if (!row) return row;
+    return {
+        ...row,
+        images: parseJsonField(row.images, []),
+    };
+}
+
 async function getCartWithItems(cartId) {
     const cartResult = await pool.query(
         "SELECT id, status, created_at, updated_at FROM carts WHERE id = $1",
@@ -29,25 +47,23 @@ async function getCartWithItems(cartId) {
             p.images,
             p.status
          FROM cart_items ci
-         JOIN products p ON p.id::text = ci.product_id
+         JOIN products p ON p.id = ci.product_id
          WHERE ci.cart_id = $1
          ORDER BY ci.created_at ASC`,
         [cartId]
     );
 
-    return { ...cartResult.rows[0], items: itemsResult.rows };
+    return { ...cartResult.rows[0], items: itemsResult.rows.map(cartItemRow) };
 }
 
 // Create an anonymous cart. Save the returned `cart.id` in localStorage.
 router.post("/", async (req, res) => {
     try {
         const id = randomUUID();
-        const result = await pool.query(
-            "INSERT INTO carts (id) VALUES ($1) RETURNING id, status, created_at, updated_at",
-            [id]
-        );
+        await pool.query("INSERT INTO carts (id) VALUES ($1)", [id]);
+        const cart = await getCartWithItems(id);
 
-        res.status(201).json({ success: true, cart: { ...result.rows[0], items: [] } });
+        res.status(201).json({ success: true, cart });
     } catch (error) {
         console.error(error);
         res.status(500).json({ success: false, message: "Unable to create cart" });
@@ -63,16 +79,16 @@ router.get("/admin/list", requireAdmin, async (req, res) => {
                 c.id,
                 c.created_at,
                 c.updated_at,
-                COALESCE(SUM(ci.quantity), 0)::integer AS item_count,
+                CAST(COALESCE(SUM(ci.quantity), 0) AS UNSIGNED) AS item_count,
                 COALESCE(SUM(ci.quantity * p.selling_price), 0) AS cart_value,
                 CASE
                     WHEN COALESCE(SUM(ci.quantity), 0) = 0 THEN 'empty'
-                    WHEN c.updated_at < CURRENT_TIMESTAMP - INTERVAL '24 hours' THEN 'abandoned'
+                    WHEN c.updated_at < DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 24 HOUR) THEN 'abandoned'
                     ELSE 'active'
                 END AS cart_status
              FROM carts c
              LEFT JOIN cart_items ci ON ci.cart_id = c.id
-             LEFT JOIN products p ON p.id::text = ci.product_id
+             LEFT JOIN products p ON p.id = ci.product_id
              GROUP BY c.id, c.created_at, c.updated_at
              ORDER BY c.updated_at DESC`
         );
@@ -90,19 +106,18 @@ router.get("/admin/list", requireAdmin, async (req, res) => {
 
 router.delete("/admin/:cartId", requireAdmin, async (req, res) => {
     try {
-        const result = await pool.query(
-            "DELETE FROM carts WHERE id = $1 RETURNING id",
-            [req.params.cartId]
-        );
+        const existing = await pool.query("SELECT id FROM carts WHERE id = $1", [req.params.cartId]);
 
-        if (result.rows.length === 0) {
+        if (existing.rows.length === 0) {
             return res.status(404).json({ success: false, message: "Cart not found" });
         }
+
+        await pool.query("DELETE FROM carts WHERE id = $1", [req.params.cartId]);
 
         res.status(200).json({
             success: true,
             message: "Cart deleted successfully",
-            cartId: result.rows[0].id,
+            cartId: req.params.cartId,
         });
     } catch (error) {
         console.error(error);
@@ -162,15 +177,24 @@ router.post("/claim", requireCustomer, async (req, res) => {
                 // GREATEST, not a sum: signing in twice with 2 in the guest
                 // cart should leave 2, not 4. Taking the larger of the two
                 // also means nothing a shopper deliberately added is lost.
-                await client.query(
-                    `INSERT INTO cart_items (cart_id, product_id, quantity, created_at, updated_at)
-                     SELECT $1, product_id, quantity, created_at, updated_at
-                     FROM cart_items WHERE cart_id = $2
-                     ON CONFLICT (cart_id, product_id)
-                     DO UPDATE SET quantity = GREATEST(cart_items.quantity, EXCLUDED.quantity),
-                                   updated_at = CURRENT_TIMESTAMP`,
-                    [targetId, sourceId]
+                const sourceItems = await client.query(
+                    "SELECT product_id, quantity, created_at, updated_at FROM cart_items WHERE cart_id = $1",
+                    [sourceId]
                 );
+
+                for (const item of sourceItems.rows) {
+                    await client.query(
+                        `INSERT IGNORE INTO cart_items (cart_id, product_id, quantity, created_at, updated_at)
+                         VALUES ($1, $2, $3, $4, $5)`,
+                        [targetId, item.product_id, item.quantity, item.created_at, item.updated_at]
+                    );
+                    await client.query(
+                        `UPDATE cart_items
+                         SET quantity = GREATEST(quantity, $3), updated_at = CURRENT_TIMESTAMP
+                         WHERE cart_id = $1 AND product_id = $2`,
+                        [targetId, item.product_id, item.quantity]
+                    );
+                }
                 await client.query("DELETE FROM carts WHERE id = $1", [sourceId]);
             }
         }
@@ -218,7 +242,7 @@ router.post("/:cartId/items", async (req, res) => {
         }
 
         const productResult = await client.query(
-            "SELECT id FROM products WHERE id::text = $1 AND status = 'active'",
+            "SELECT id FROM products WHERE id = $1 AND status = 'active'",
             [String(productId)]
         );
         if (productResult.rows.length === 0) {
@@ -226,14 +250,23 @@ router.post("/:cartId/items", async (req, res) => {
             return res.status(404).json({ success: false, message: "Active product not found" });
         }
 
-        await client.query(
-            `INSERT INTO cart_items (cart_id, product_id, quantity)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (cart_id, product_id)
-             DO UPDATE SET quantity = cart_items.quantity + EXCLUDED.quantity,
-                           updated_at = CURRENT_TIMESTAMP`,
-            [req.params.cartId, String(productId), validQuantity]
+        const itemResult = await client.query(
+            "SELECT quantity FROM cart_items WHERE cart_id = $1 AND product_id = $2 FOR UPDATE",
+            [req.params.cartId, String(productId)]
         );
+        if (itemResult.rows.length > 0) {
+            await client.query(
+                `UPDATE cart_items
+                 SET quantity = quantity + $3, updated_at = CURRENT_TIMESTAMP
+                 WHERE cart_id = $1 AND product_id = $2`,
+                [req.params.cartId, String(productId), validQuantity]
+            );
+        } else {
+            await client.query(
+                "INSERT INTO cart_items (cart_id, product_id, quantity) VALUES ($1, $2, $3)",
+                [req.params.cartId, String(productId), validQuantity]
+            );
+        }
         await client.query("UPDATE carts SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [req.params.cartId]);
         await client.query("COMMIT");
 
@@ -255,16 +288,20 @@ router.patch("/:cartId/items/:productId", async (req, res) => {
             return res.status(400).json({ success: false, message: "A positive integer quantity is required" });
         }
 
-        const result = await pool.query(
-            `UPDATE cart_items
-             SET quantity = $1, updated_at = CURRENT_TIMESTAMP
-             WHERE cart_id = $2 AND product_id = $3
-             RETURNING *`,
-            [validQuantity, req.params.cartId, req.params.productId]
+        const existing = await pool.query(
+            "SELECT cart_id FROM cart_items WHERE cart_id = $1 AND product_id = $2",
+            [req.params.cartId, req.params.productId]
         );
-        if (result.rows.length === 0) {
+        if (existing.rows.length === 0) {
             return res.status(404).json({ success: false, message: "Cart item not found" });
         }
+
+        await pool.query(
+            `UPDATE cart_items
+             SET quantity = $1, updated_at = CURRENT_TIMESTAMP
+             WHERE cart_id = $2 AND product_id = $3`,
+            [validQuantity, req.params.cartId, req.params.productId]
+        );
 
         await pool.query("UPDATE carts SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [req.params.cartId]);
         const cart = await getCartWithItems(req.params.cartId);
@@ -277,13 +314,18 @@ router.patch("/:cartId/items/:productId", async (req, res) => {
 
 router.delete("/:cartId/items/:productId", async (req, res) => {
     try {
-        const result = await pool.query(
-            "DELETE FROM cart_items WHERE cart_id = $1 AND product_id = $2 RETURNING *",
+        const existing = await pool.query(
+            "SELECT cart_id FROM cart_items WHERE cart_id = $1 AND product_id = $2",
             [req.params.cartId, req.params.productId]
         );
-        if (result.rows.length === 0) {
+        if (existing.rows.length === 0) {
             return res.status(404).json({ success: false, message: "Cart item not found" });
         }
+
+        await pool.query(
+            "DELETE FROM cart_items WHERE cart_id = $1 AND product_id = $2",
+            [req.params.cartId, req.params.productId]
+        );
 
         await pool.query("UPDATE carts SET updated_at = CURRENT_TIMESTAMP WHERE id = $1", [req.params.cartId]);
         const cart = await getCartWithItems(req.params.cartId);

@@ -50,12 +50,36 @@ function signaturesMatch(expected, received) {
     return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-function verifyPaymentSignature({ razorpayOrderId, razorpayPaymentId, signature }) {
+function getRazorpayConfig() {
+    const keyId = String(process.env.RAZORPAY_KEY_ID || "").trim();
+    const keySecret = String(process.env.RAZORPAY_KEY_SECRET || "").trim();
+
+    if (!keyId || !keySecret) {
+        throw new HttpError(500, "Razorpay is not configured on the server.");
+    }
+
+    return { keyId, keySecret };
+}
+
+function verifyPaymentSignature({ razorpayOrderId, razorpayPaymentId, signature, keySecret }) {
     const expected = crypto
-        .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+        .createHmac("sha256", keySecret)
         .update(`${razorpayOrderId}|${razorpayPaymentId}`)
         .digest("hex");
     return signaturesMatch(expected, signature);
+}
+
+function paymentFailureReason({ reason, razorpayPaymentId, error }) {
+    const parts = [reason || "unknown reason"];
+
+    if (razorpayPaymentId) parts.push(`payment ${razorpayPaymentId}`);
+    if (error && typeof error === "object") {
+        for (const key of ["code", "source", "step", "reason"]) {
+            if (error[key]) parts.push(`${key}: ${error[key]}`);
+        }
+    }
+
+    return parts.join(" | ").slice(0, 1000);
 }
 
 /* ------------------------------------------------------------------ */
@@ -65,6 +89,7 @@ function verifyPaymentSignature({ razorpayOrderId, razorpayPaymentId, signature 
 router.post("/create-order", async (req, res) => {
     const client = await pool.connect();
     try {
+        const { keyId } = getRazorpayConfig();
         const { cartId, paymentMethod = "razorpay", couponCode = null } = req.body;
 
         if (!cartId) {
@@ -123,7 +148,7 @@ router.post("/create-order", async (req, res) => {
 
         res.json({
             success: true,
-            keyId: process.env.RAZORPAY_KEY_ID,
+            keyId,
             razorpayOrder: {
                 id: razorpayOrder.id,
                 amount: razorpayOrder.amount,
@@ -247,6 +272,7 @@ async function fulfillPaidOrder({ payment, signature }) {
 
 router.post("/verify", async (req, res) => {
     try {
+        const { keySecret } = getRazorpayConfig();
         const {
             razorpay_order_id: razorpayOrderId,
             razorpay_payment_id: razorpayPaymentId,
@@ -257,7 +283,7 @@ router.post("/verify", async (req, res) => {
             throw new HttpError(400, "razorpay_order_id, razorpay_payment_id and razorpay_signature are required");
         }
 
-        if (!verifyPaymentSignature({ razorpayOrderId, razorpayPaymentId, signature })) {
+        if (!verifyPaymentSignature({ razorpayOrderId, razorpayPaymentId, signature, keySecret })) {
             console.error(`Signature check failed for payment ${razorpayPaymentId}`);
             throw new HttpError(400, "Payment could not be verified.");
         }
@@ -299,13 +325,24 @@ router.post("/verify", async (req, res) => {
 
 router.post("/failed", async (req, res) => {
     try {
-        const { razorpay_order_id: razorpayOrderId, reason } = req.body;
+        const {
+            razorpay_order_id: razorpayOrderId,
+            razorpay_payment_id: razorpayPaymentId,
+            reason,
+            error: gatewayError,
+        } = req.body;
         if (!razorpayOrderId) {
             throw new HttpError(400, "razorpay_order_id is required");
         }
 
         const order = await findOrderByRazorpayOrderId(pool, razorpayOrderId);
-        if (order) await markOrderFailed(pool, order.id, reason);
+        if (order) {
+            await markOrderFailed(
+                pool,
+                order.id,
+                paymentFailureReason({ reason, razorpayPaymentId, error: gatewayError })
+            );
+        }
 
         res.json({ success: true });
     } catch (error) {

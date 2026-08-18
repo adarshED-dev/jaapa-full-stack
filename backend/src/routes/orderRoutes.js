@@ -209,17 +209,17 @@ router.post("/:id/ship", requireAdmin, async (req, res) => {
             throw new HttpError(502, shiprocketError.message);
         }
 
-        const updated = await pool.query(
+        await pool.query(
             `UPDATE orders
              SET fulfilment_status = 'processing',
                  shiprocket_order_id = $2,
                  shiprocket_shipment_id = $3,
                  fulfilment_error = NULL,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1
-             RETURNING *`,
+             WHERE id = $1`,
             [order.id, shipment.shiprocketOrderId, shipment.shipmentId]
         );
+        const updated = await pool.query("SELECT * FROM orders WHERE id = $1", [order.id]);
 
         res.json({
             success: true,

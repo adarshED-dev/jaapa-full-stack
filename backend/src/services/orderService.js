@@ -17,7 +17,28 @@ class HttpError extends Error {
     }
 }
 
-const UNIQUE_VIOLATION = "23505";
+const UNIQUE_VIOLATION = "ER_DUP_ENTRY";
+
+function parseJsonField(value, fallback) {
+    if (value == null) return fallback;
+    if (Array.isArray(value) || typeof value === "object") return value;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return fallback;
+    }
+}
+
+function rowWithJson(row) {
+    if (!row) return row;
+    return {
+        ...row,
+        customer_info: parseJsonField(row.customer_info, {}),
+        items: parseJsonField(row.items, []),
+        shipping_address: parseJsonField(row.shipping_address, null),
+        payment_details: parseJsonField(row.payment_details, null),
+    };
+}
 
 /* ------------------------------------------------------------------ */
 /* Line items — always priced from the products table                  */
@@ -25,11 +46,12 @@ const UNIQUE_VIOLATION = "23505";
 
 function toItem(row, quantity) {
     const unitPrice = Number(row.selling_price);
+    const images = parseJsonField(row.images, []);
     return {
         product_id: String(row.id ?? row.product_id),
         title: row.title,
         handle: row.handle || null,
-        image: Array.isArray(row.images) ? row.images[0] || null : null,
+        image: images[0] || null,
         unit_price: unitPrice,
         quantity: Number(quantity),
         line_total: Math.round(unitPrice * Number(quantity) * 100) / 100,
@@ -41,7 +63,7 @@ async function buildItemsFromCart(db, cartId) {
         `SELECT ci.product_id, ci.quantity, p.title, p.handle, p.images, p.selling_price,
                 p.status, p.quantity AS stock_quantity
          FROM cart_items ci
-         JOIN products p ON p.id::text = ci.product_id
+         JOIN products p ON p.id = ci.product_id
          WHERE ci.cart_id = $1
          ORDER BY ci.created_at ASC`,
         [cartId]
@@ -140,25 +162,24 @@ async function upsertCustomer(db, input) {
 
     const existing = await db.query(
         `SELECT * FROM customers
-         WHERE ($1::text IS NOT NULL AND LOWER(email) = $1)
-            OR ($2::text IS NOT NULL AND phone = $2)
+         WHERE ($1 IS NOT NULL AND LOWER(email) = $1)
+            OR ($2 IS NOT NULL AND phone = $2)
          ORDER BY created_at ASC
          LIMIT 1`,
         [email, phone]
     );
 
     if (existing.rows.length > 0) {
-        const updated = await db.query(
+        await db.query(
             `UPDATE customers
              SET email = COALESCE(email, $2),
                  phone = COALESCE(phone, $3),
                  full_name = COALESCE($4, full_name),
-                 default_address = COALESCE($5::jsonb, default_address),
+                 default_address = COALESCE($5, default_address),
                  accepts_marketing = accepts_marketing OR $6,
                  razorpay_customer_id = COALESCE($7, razorpay_customer_id),
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1
-             RETURNING *`,
+             WHERE id = $1`,
             [
                 existing.rows[0].id,
                 email,
@@ -169,16 +190,17 @@ async function upsertCustomer(db, input) {
                 razorpayCustomerId,
             ]
         );
-        return { customer: updated.rows[0], created: false };
+        const updated = await db.query("SELECT * FROM customers WHERE id = $1", [existing.rows[0].id]);
+        return { customer: rowWithJson(updated.rows[0]), created: false };
     }
 
+    const id = randomUUID();
     try {
-        const inserted = await db.query(
+        await db.query(
             `INSERT INTO customers (id, email, phone, full_name, default_address, accepts_marketing, razorpay_customer_id)
-             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
-             RETURNING *`,
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
             [
-                randomUUID(),
+                id,
                 email,
                 phone,
                 fullName,
@@ -187,20 +209,21 @@ async function upsertCustomer(db, input) {
                 razorpayCustomerId,
             ]
         );
-        return { customer: inserted.rows[0], created: true };
+        const inserted = await db.query("SELECT * FROM customers WHERE id = $1", [id]);
+        return { customer: rowWithJson(inserted.rows[0]), created: true };
     } catch (error) {
         // Two checkouts for the same person at once — the unique index caught
         // the second one, so read back the row the first one wrote.
         if (error.code !== UNIQUE_VIOLATION) throw error;
         const retry = await db.query(
             `SELECT * FROM customers
-             WHERE ($1::text IS NOT NULL AND LOWER(email) = $1)
-                OR ($2::text IS NOT NULL AND phone = $2)
+             WHERE ($1 IS NOT NULL AND LOWER(email) = $1)
+                OR ($2 IS NOT NULL AND phone = $2)
              LIMIT 1`,
             [email, phone]
         );
         if (retry.rows.length === 0) throw error;
-        return { customer: retry.rows[0], created: false };
+        return { customer: rowWithJson(retry.rows[0]), created: false };
     }
 }
 
@@ -234,12 +257,11 @@ async function reserveStock(db, items) {
         const result = await db.query(
             `UPDATE products
              SET quantity = quantity - $2, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1 AND quantity >= $2
-             RETURNING quantity`,
+             WHERE id = $1 AND quantity >= $2`,
             [item.product_id, item.quantity]
         );
 
-        if (result.rows.length === 0) {
+        if (result.rowCount === 0) {
             throw new HttpError(
                 409,
                 `${item.title || "One of the items in your order"} doesn't have enough stock left. Please update your cart and try again.`
@@ -258,14 +280,14 @@ async function reserveStock(db, items) {
  */
 async function deductStockAfterPayment(db, items) {
     for (const item of items) {
-        const result = await db.query(
+        await db.query(
             `UPDATE products
              SET quantity = GREATEST(quantity - $2, 0), updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1 AND quantity IS NOT NULL
-             RETURNING quantity`,
+             WHERE id = $1 AND quantity IS NOT NULL`,
             [item.product_id, item.quantity]
         );
 
+        const result = await db.query("SELECT quantity FROM products WHERE id = $1", [item.product_id]);
         if (result.rows.length > 0 && Number(result.rows[0].quantity) === 0) {
             console.warn(
                 `Stock for product ${item.product_id} hit 0 while fulfilling a paid order — check for oversell.`
@@ -295,7 +317,7 @@ async function createOrder(db, order) {
     const orderNumber = order.orderNumber || generateOrderNumber();
     const totals = order.totals;
 
-    const result = await db.query(
+    await db.query(
         `INSERT INTO orders (
             id, order_number, cart_id, customer_id, customer_info, items,
             subtotal_amount, tax_amount, tax_rate, shipping_amount, cod_fee,
@@ -303,12 +325,12 @@ async function createOrder(db, order) {
             payment_method, payment_status, status, razorpay_order_id,
             coupon_code, notes
          ) VALUES (
-            $1, $2, $3, $4, $5::jsonb, $6::jsonb,
+            $1, $2, $3, $4, $5, $6,
             $7, $8, $9, $10, $11,
-            $12, $13, $14, $15::jsonb,
+            $12, $13, $14, $15,
             $16, $17, $18, $19,
             $20, $21
-         ) RETURNING *`,
+         )`,
         [
             id,
             orderNumber,
@@ -334,7 +356,7 @@ async function createOrder(db, order) {
         ]
     );
 
-    return result.rows[0];
+    return findOrderById(db, id);
 }
 
 /**
@@ -350,11 +372,10 @@ async function markOrderPaid(db, { orderId, customerId, paymentId, signature, pa
              customer_id = COALESCE($2, customer_id),
              razorpay_payment_id = $3,
              razorpay_signature = COALESCE($4, razorpay_signature),
-             payment_details = $5::jsonb,
+             payment_details = $5,
              paid_at = CURRENT_TIMESTAMP,
              updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1 AND payment_status <> 'paid'
-         RETURNING *`,
+         WHERE id = $1 AND payment_status <> 'paid'`,
         [
             orderId,
             customerId || null,
@@ -364,7 +385,8 @@ async function markOrderPaid(db, { orderId, customerId, paymentId, signature, pa
         ]
     );
 
-    return result.rows[0] || null;
+    if (result.rowCount === 0) return null;
+    return findOrderById(db, orderId);
 }
 
 async function markOrderFailed(db, orderId, reason) {
@@ -372,7 +394,7 @@ async function markOrderFailed(db, orderId, reason) {
         `UPDATE orders
          SET payment_status = 'failed',
              status = 'cancelled',
-             notes = COALESCE(notes || E'\\n', '') || $2,
+             notes = CONCAT(COALESCE(CONCAT(notes, '\n'), ''), $2),
              updated_at = CURRENT_TIMESTAMP
          WHERE id = $1 AND payment_status NOT IN ('paid', 'failed')`,
         [orderId, `Payment failed: ${reason || "unknown reason"}`]
@@ -403,6 +425,11 @@ async function closeCart(db, cartId) {
     );
 }
 
+async function findOrderById(db, id) {
+    const result = await db.query("SELECT * FROM orders WHERE id = $1", [id]);
+    return rowWithJson(result.rows[0]) || null;
+}
+
 /**
  * `forUpdate` locks the row for the rest of the transaction. Fulfilment uses
  * it so the browser callback and the webhook — which routinely arrive within
@@ -414,12 +441,12 @@ async function findOrderByRazorpayOrderId(db, razorpayOrderId, { forUpdate = fal
         `SELECT * FROM orders WHERE razorpay_order_id = $1${forUpdate ? " FOR UPDATE" : ""}`,
         [razorpayOrderId]
     );
-    return result.rows[0] || null;
+    return rowWithJson(result.rows[0]) || null;
 }
 
 async function findOrderByNumber(db, orderNumber) {
     const result = await db.query("SELECT * FROM orders WHERE order_number = $1", [orderNumber]);
-    return result.rows[0] || null;
+    return rowWithJson(result.rows[0]) || null;
 }
 
 /**
@@ -429,38 +456,39 @@ async function findOrderByNumber(db, orderNumber) {
  */
 function toPublicOrder(order) {
     if (!order) return null;
+    const publicOrder = rowWithJson(order);
     return {
-        id: order.id,
-        order_number: order.order_number,
-        status: order.status,
-        payment_status: order.payment_status,
-        payment_method: order.payment_method,
-        items: order.items,
-        customer: order.customer_info,
-        shipping_address: order.shipping_address,
-        subtotal_amount: Number(order.subtotal_amount),
-        tax_amount: Number(order.tax_amount),
-        tax_rate: Number(order.tax_rate),
-        shipping_amount: Number(order.shipping_amount),
-        cod_fee: Number(order.cod_fee),
-        discount_amount: Number(order.discount_amount),
-        total_amount: Number(order.total_amount),
-        currency: order.currency,
-        coupon_code: order.coupon_code,
-        razorpay_order_id: order.razorpay_order_id,
-        razorpay_payment_id: order.razorpay_payment_id,
-        paid_at: order.paid_at,
-        created_at: order.created_at,
+        id: publicOrder.id,
+        order_number: publicOrder.order_number,
+        status: publicOrder.status,
+        payment_status: publicOrder.payment_status,
+        payment_method: publicOrder.payment_method,
+        items: publicOrder.items,
+        customer: publicOrder.customer_info,
+        shipping_address: publicOrder.shipping_address,
+        subtotal_amount: Number(publicOrder.subtotal_amount),
+        tax_amount: Number(publicOrder.tax_amount),
+        tax_rate: Number(publicOrder.tax_rate),
+        shipping_amount: Number(publicOrder.shipping_amount),
+        cod_fee: Number(publicOrder.cod_fee),
+        discount_amount: Number(publicOrder.discount_amount),
+        total_amount: Number(publicOrder.total_amount),
+        currency: publicOrder.currency,
+        coupon_code: publicOrder.coupon_code,
+        razorpay_order_id: publicOrder.razorpay_order_id,
+        razorpay_payment_id: publicOrder.razorpay_payment_id,
+        paid_at: publicOrder.paid_at,
+        created_at: publicOrder.created_at,
         // Genuinely useful on the customer's own order-confirmation/tracking
         // view ("has this shipped, where is it"), so it travels with the
         // rest of the order rather than being admin-only. The internal
         // Shiprocket order/shipment ids stay off this shape — see the admin
         // listing routes, which add those on top of toPublicOrder.
-        fulfilment_status: order.fulfilment_status,
-        awb_code: order.awb_code,
-        courier_name: order.courier_name,
-        tracking_url: order.tracking_url,
-        shipped_at: order.shipped_at,
+        fulfilment_status: publicOrder.fulfilment_status,
+        awb_code: publicOrder.awb_code,
+        courier_name: publicOrder.courier_name,
+        tracking_url: publicOrder.tracking_url,
+        shipped_at: publicOrder.shipped_at,
     };
 }
 

@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
+const { runMigrations } = require("./migrations/runMigrations");
 
 const app = express();
 
@@ -55,6 +56,19 @@ app.use("/api", userRoutes);
 
 app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 
-app.listen(5000, () => {
-  console.log("Server running on port 5000");
-});
+const PORT = Number(process.env.PORT || 5000);
+
+async function startServer() {
+    try {
+        await runMigrations();
+        app.listen(PORT, () => {
+            console.log(`Server running on port ${PORT}`);
+        });
+    } catch (error) {
+        console.error("Unable to start server because database migrations failed:");
+        console.error(error);
+        process.exit(1);
+    }
+}
+
+startServer();

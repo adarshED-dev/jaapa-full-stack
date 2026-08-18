@@ -6,13 +6,37 @@ const { requireAdmin } = require("../middleware/requireAdmin");
 // Reading the catalog stays public — the storefront needs it. Everything that
 // writes to it is admin-only.
 
+function parseJsonField(value, fallback) {
+    if (value == null) return fallback;
+    if (Array.isArray(value) || typeof value === "object") return value;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return fallback;
+    }
+}
+
+function productRow(row) {
+    if (!row) return row;
+    return {
+        ...row,
+        tags: parseJsonField(row.tags, []),
+        images: parseJsonField(row.images, []),
+    };
+}
+
+async function findProduct(id) {
+    const result = await pool.query("SELECT * FROM products WHERE id = $1", [id]);
+    return productRow(result.rows[0]);
+}
+
 router.get("/product/get/data", async (req, res)=>{
     try{
         const result = await pool.query("SELECT * FROM products");
         res.status(200).json({
             success: true,
             count: result.rows.length,
-            body: result.rows,
+            body: result.rows.map(productRow),
         })
     } catch (error) {
         console.error(error);
@@ -29,7 +53,7 @@ router.post("/product/get/order-details", async (req, res)=>{
         res.status(200).json({
             success: true,
             count: result.rows.length,
-            body: result.rows,
+            body: result.rows.map(productRow),
         })
     } catch (error) {
         console.error(error);
@@ -42,19 +66,16 @@ router.post("/product/get/order-details", async (req, res)=>{
 router.post("/product/add/new-product", requireAdmin, async (req, res)=>{
     try{
         const { id, title, tagline, description, handle, vendor, selling_price, compare_price, quantity, available, status, tags, low_stock_alert, sku, images } = req.body;
-        const result = await pool.query(
-            // RETURNING * so the response's `data` is the row that was
-            // actually written — without it the admin got `undefined` back
-            // from a successful create.
+        await pool.query(
             `INSERT INTO products
                 (id, title, tagline, description, handle, vendor, selling_price, compare_price, quantity, available, status, tags, low_stock_alert, sku, images)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-             RETURNING *`,
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
             [id, title, tagline, description, handle, vendor, selling_price, compare_price, quantity, available, status, tags, low_stock_alert, sku, images ]);
+        const product = await findProduct(id);
         res.status(201).json({
             success: true,
             message: "Product added successfully",
-            data: result.rows[0]
+            data: product
         });
     } catch (error) {
         console.error(error);
@@ -85,7 +106,7 @@ router.put("/product/update/:id", requireAdmin, async (req, res) => {
             images,
         } = req.body;
 
-        const result = await pool.query(
+        await pool.query(
             `UPDATE products
              SET title = $1,
                  tagline = $2,
@@ -101,8 +122,7 @@ router.put("/product/update/:id", requireAdmin, async (req, res) => {
                  low_stock_alert = $12,
                  sku = $13,
                  images = $14
-             WHERE id = $15
-             RETURNING *`,
+             WHERE id = $15`,
             [
                 title,
                 tagline,
@@ -122,7 +142,8 @@ router.put("/product/update/:id", requireAdmin, async (req, res) => {
             ]
         );
 
-        if (result.rows.length === 0) {
+        const product = await findProduct(id);
+        if (!product) {
             return res.status(404).json({
                 success: false,
                 message: "Product not found",
@@ -132,7 +153,7 @@ router.put("/product/update/:id", requireAdmin, async (req, res) => {
         res.status(200).json({
             success: true,
             message: "Product updated successfully",
-            data: result.rows[0],
+            data: product,
         });
     } catch (error) {
         console.error(error);
@@ -146,22 +167,21 @@ router.put("/product/update/:id", requireAdmin, async (req, res) => {
 router.delete("/product/delete/:id", requireAdmin, async (req, res) => {
     try {
         const { id } = req.params;
-        const result = await pool.query(
-            "DELETE FROM products WHERE id = $1 RETURNING *",
-            [id]
-        );
+        const product = await findProduct(id);
 
-        if (result.rows.length === 0) {
+        if (!product) {
             return res.status(404).json({
                 success: false,
                 message: "Product not found",
             });
         }
 
+        await pool.query("DELETE FROM products WHERE id = $1", [id]);
+
         res.status(200).json({
             success: true,
             message: "Product deleted successfully",
-            data: result.rows[0],
+            data: product,
         });
     } catch (error) {
         console.error(error);
