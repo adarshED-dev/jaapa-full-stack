@@ -196,11 +196,10 @@ async function listSessions(adminId, currentToken) {
 async function revokeSessionById(adminId, sessionId) {
     const result = await pool.query(
         `UPDATE admin_sessions SET revoked_at = CURRENT_TIMESTAMP
-         WHERE id = $1 AND admin_id = $2 AND revoked_at IS NULL
-         RETURNING id`,
+         WHERE id = $1 AND admin_id = $2 AND revoked_at IS NULL`,
         [sessionId, adminId]
     );
-    return result.rows.length > 0;
+    return result.rowCount > 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -216,14 +215,15 @@ function lockRemainingMinutes(admin) {
 async function registerFailedAttempt(admin) {
     const attempts = admin.failed_attempts + 1;
     const shouldLock = attempts >= MAX_FAILED_ATTEMPTS;
+    const lockedUntil = shouldLock ? new Date(Date.now() + LOCK_MINUTES * 60 * 1000) : null;
 
     await pool.query(
         `UPDATE admin_users
          SET failed_attempts = $2,
-             locked_until = CASE WHEN $3 THEN CURRENT_TIMESTAMP + ($4 || ' minutes')::interval ELSE locked_until END,
+             locked_until = CASE WHEN $3 THEN $4 ELSE locked_until END,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = $1`,
-        [admin.id, shouldLock ? 0 : attempts, shouldLock, String(LOCK_MINUTES)]
+        [admin.id, shouldLock ? 0 : attempts, shouldLock, lockedUntil]
     );
 
     return { locked: shouldLock, remaining: Math.max(0, MAX_FAILED_ATTEMPTS - attempts) };

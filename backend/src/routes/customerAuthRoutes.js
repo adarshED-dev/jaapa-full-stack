@@ -252,14 +252,13 @@ router.patch("/me", requireCustomer, async (req, res) => {
 
         // COALESCE keeps a field untouched when the request didn't mention it,
         // so a form that only edits the name can't blank out the email.
-        const result = await pool.query(
+        await pool.query(
             `UPDATE customers
              SET full_name = COALESCE($2, full_name),
                  email = COALESCE($3, email),
                  accepts_marketing = COALESCE($4, accepts_marketing),
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1
-             RETURNING *`,
+             WHERE id = $1`,
             [
                 req.customer.id,
                 fullName === undefined || fullName === "" ? null : fullName,
@@ -268,10 +267,11 @@ router.patch("/me", requireCustomer, async (req, res) => {
             ]
         );
 
+        const result = await pool.query("SELECT * FROM customers WHERE id = $1", [req.customer.id]);
         res.json({ success: true, customer: toPublicCustomer(result.rows[0]) });
     } catch (error) {
         // customers_email_key: this address already belongs to another account.
-        if (error.code === "23505") {
+        if (error.code === "23505" || error.code === "ER_DUP_ENTRY") {
             return res.status(409).json({
                 success: false,
                 message: "That email is already used by another account",

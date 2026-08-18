@@ -133,11 +133,17 @@ router.post("/claim", requireCustomer, async (req, res) => {
                     [sourceId]
                 );
                 for (const item of sourceItems.rows) {
-                    await client.query(
-                        `INSERT IGNORE INTO wishlist_items (wishlist_id, product_id, created_at)
-                         VALUES ($1, $2, $3)`,
-                        [targetId, item.product_id, item.created_at]
+                    const existingItem = await client.query(
+                        "SELECT product_id FROM wishlist_items WHERE wishlist_id = $1 AND product_id = $2",
+                        [targetId, item.product_id]
                     );
+                    if (existingItem.rows.length === 0) {
+                        await client.query(
+                            `INSERT INTO wishlist_items (wishlist_id, product_id, created_at)
+                             VALUES ($1, $2, $3)`,
+                            [targetId, item.product_id, item.created_at]
+                        );
+                    }
                 }
                 // Items cascade with it.
                 await client.query("DELETE FROM wishlists WHERE id = $1", [sourceId]);
@@ -194,10 +200,16 @@ router.post("/:wishlistId/items", async (req, res) => {
 
         // Saving twice is a no-op rather than an error, so a double click on
         // the heart can't 500.
-        await pool.query(
-            "INSERT IGNORE INTO wishlist_items (wishlist_id, product_id) VALUES ($1, $2)",
+        const existingItem = await pool.query(
+            "SELECT product_id FROM wishlist_items WHERE wishlist_id = $1 AND product_id = $2",
             [req.params.wishlistId, String(productId)]
         );
+        if (existingItem.rows.length === 0) {
+            await pool.query(
+                "INSERT INTO wishlist_items (wishlist_id, product_id) VALUES ($1, $2)",
+                [req.params.wishlistId, String(productId)]
+            );
+        }
         await pool.query(
             "UPDATE wishlists SET updated_at = CURRENT_TIMESTAMP WHERE id = $1",
             [req.params.wishlistId]

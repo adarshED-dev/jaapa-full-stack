@@ -126,10 +126,10 @@ router.get("/:id", requireAdmin, async (req, res) => {
 // and readable after the account is gone.
 router.delete("/:id", requireAdmin, async (req, res) => {
     try {
-        // RETURNING * (not a shorter column list) because toPublicCustomer
-        // below reads fields like total_spent and created_at too.
-        const result = await pool.query("DELETE FROM customers WHERE id = $1 RETURNING *", [req.params.id]);
+        const result = await pool.query("SELECT * FROM customers WHERE id = $1", [req.params.id]);
         if (result.rows.length === 0) throw new HttpError(404, "Customer not found");
+
+        await pool.query("DELETE FROM customers WHERE id = $1", [req.params.id]);
 
         res.json({ success: true, customer: toPublicCustomer(result.rows[0]) });
     } catch (error) {

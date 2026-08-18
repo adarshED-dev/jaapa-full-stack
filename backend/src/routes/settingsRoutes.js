@@ -14,6 +14,20 @@ const uploadBranding = require("../middleware/uploadBranding");
 const { publicUploadUrl } = require("../services/uploadUrl");
 const { requireAdmin } = require("../middleware/requireAdmin");
 
+function parseJsonField(value, fallback) {
+    if (value == null) return fallback;
+    if (Array.isArray(value) || typeof value === "object") return value;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return fallback;
+    }
+}
+
+function settingsRowData(row) {
+    return parseJsonField(row?.data, {});
+}
+
 // Every route below is admin-only: this is store configuration (GST rates,
 // policy text, billing info) with no public reader — the storefront reads
 // GST straight from the DB (see services/pricing.js), never through this
@@ -51,7 +65,7 @@ router.post("/upload-branding", (req, res) => {
 router.get("/", async (req, res) => {
     try {
         const result = await pool.query("SELECT section, data FROM store_settings");
-        const settings = Object.fromEntries(result.rows.map((row) => [row.section, row.data]));
+        const settings = Object.fromEntries(result.rows.map((row) => [row.section, settingsRowData(row)]));
         res.json({ success: true, settings });
     } catch (error) {
         console.error(error);
@@ -71,7 +85,7 @@ router.get("/:section", async (req, res) => {
         );
         // A section that's never been saved is not an error — the admin panel
         // falls back to its own empty defaults.
-        res.json({ success: true, settings: result.rows[0]?.data || {} });
+        res.json({ success: true, settings: settingsRowData(result.rows[0]) });
     } catch (error) {
         console.error(error);
         res.status(500).json({ success: false, message: "Unable to load these settings" });
@@ -89,15 +103,24 @@ router.put("/:section", async (req, res) => {
     }
 
     try {
-        const result = await pool.query(
-            `INSERT INTO store_settings (section, data)
-             VALUES ($1, $2::jsonb)
-             ON CONFLICT (section)
-             DO UPDATE SET data = EXCLUDED.data, updated_at = CURRENT_TIMESTAMP
-             RETURNING data`,
-            [req.params.section, JSON.stringify(data)]
+        const existing = await pool.query(
+            "SELECT section FROM store_settings WHERE section = $1",
+            [req.params.section]
         );
-        res.json({ success: true, settings: result.rows[0].data });
+        if (existing.rows.length > 0) {
+            await pool.query(
+                "UPDATE store_settings SET data = $2, updated_at = CURRENT_TIMESTAMP WHERE section = $1",
+                [req.params.section, JSON.stringify(data)]
+            );
+        } else {
+            await pool.query(
+                "INSERT INTO store_settings (section, data) VALUES ($1, $2)",
+                [req.params.section, JSON.stringify(data)]
+            );
+        }
+
+        const result = await pool.query("SELECT data FROM store_settings WHERE section = $1", [req.params.section]);
+        res.json({ success: true, settings: settingsRowData(result.rows[0]) });
     } catch (error) {
         console.error(error);
         res.status(500).json({ success: false, message: "Unable to save these settings" });

@@ -25,6 +25,10 @@ function productRow(row) {
     };
 }
 
+function toJsonParam(value, fallback = []) {
+    return JSON.stringify(Array.isArray(value) ? value : fallback);
+}
+
 async function findProduct(id) {
     const result = await pool.query("SELECT * FROM products WHERE id = $1", [id]);
     return productRow(result.rows[0]);
@@ -70,7 +74,23 @@ router.post("/product/add/new-product", requireAdmin, async (req, res)=>{
             `INSERT INTO products
                 (id, title, tagline, description, handle, vendor, selling_price, compare_price, quantity, available, status, tags, low_stock_alert, sku, images)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
-            [id, title, tagline, description, handle, vendor, selling_price, compare_price, quantity, available, status, tags, low_stock_alert, sku, images ]);
+            [
+                id,
+                title,
+                tagline,
+                description,
+                handle,
+                vendor,
+                selling_price,
+                compare_price,
+                quantity,
+                available,
+                status,
+                toJsonParam(tags),
+                low_stock_alert,
+                sku,
+                toJsonParam(images),
+            ]);
         const product = await findProduct(id);
         res.status(201).json({
             success: true,
@@ -134,10 +154,10 @@ router.put("/product/update/:id", requireAdmin, async (req, res) => {
                 quantity,
                 available,
                 status,
-                tags,
+                toJsonParam(tags),
                 low_stock_alert,
                 sku,
-                images,
+                toJsonParam(images),
                 id,
             ]
         );

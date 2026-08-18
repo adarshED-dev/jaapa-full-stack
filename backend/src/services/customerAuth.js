@@ -127,11 +127,12 @@ async function sendOtp(phone, code) {
 /* ------------------------------------------------------------------ */
 
 async function issueOtp(phone, { ip } = {}) {
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
     const recent = await pool.query(
         `SELECT created_at FROM customer_otp_codes
-         WHERE phone = $1 AND created_at > CURRENT_TIMESTAMP - INTERVAL '1 hour'
+         WHERE phone = $1 AND created_at > $2
          ORDER BY created_at DESC`,
-        [phone]
+        [phone, oneHourAgo]
     );
 
     if (recent.rows.length >= OTP_MAX_PER_HOUR) {
@@ -161,10 +162,11 @@ async function issueOtp(phone, { ip } = {}) {
     );
 
     const code = generateCode();
+    const expiresAt = new Date(Date.now() + OTP_TTL_MINUTES * 60 * 1000);
     await pool.query(
         `INSERT INTO customer_otp_codes (id, phone, code_hash, expires_at, ip_address)
-         VALUES ($1, $2, $3, CURRENT_TIMESTAMP + ($4 || ' minutes')::interval, $5)`,
-        [randomUUID(), phone, hashCode(phone, code), String(OTP_TTL_MINUTES), ip || null]
+         VALUES ($1, $2, $3, $4, $5)`,
+        [randomUUID(), phone, hashCode(phone, code), expiresAt, ip || null]
     );
 
     await sendOtp(phone, code);
@@ -204,10 +206,11 @@ async function verifyOtp(phone, code) {
     }
 
     if (!codeMatches(phone, String(code || ""), record.code_hash)) {
-        const updated = await pool.query(
-            `UPDATE customer_otp_codes SET attempts = attempts + 1 WHERE id = $1 RETURNING attempts`,
+        await pool.query(
+            "UPDATE customer_otp_codes SET attempts = attempts + 1 WHERE id = $1",
             [record.id]
         );
+        const updated = await pool.query("SELECT attempts FROM customer_otp_codes WHERE id = $1", [record.id]);
         const left = OTP_MAX_ATTEMPTS - updated.rows[0].attempts;
 
         if (left <= 0) {
@@ -246,7 +249,7 @@ async function verifyOtp(phone, code) {
 async function findOrCreateCustomerByPhone(phone) {
     const existing = await pool.query(
         `SELECT * FROM customers
-         WHERE RIGHT(regexp_replace(phone, '\\D', '', 'g'), 10) = $1
+         WHERE RIGHT(phone, 10) = $1
          ORDER BY created_at ASC LIMIT 1`,
         [phone]
     );
@@ -255,10 +258,9 @@ async function findOrCreateCustomerByPhone(phone) {
         return { customer: existing.rows[0], created: false };
     }
 
-    const created = await pool.query(
-        `INSERT INTO customers (id, phone) VALUES ($1, $2) RETURNING *`,
-        [randomUUID(), phone]
-    );
+    const id = randomUUID();
+    await pool.query("INSERT INTO customers (id, phone) VALUES ($1, $2)", [id, phone]);
+    const created = await pool.query("SELECT * FROM customers WHERE id = $1", [id]);
     return { customer: created.rows[0], created: true };
 }
 

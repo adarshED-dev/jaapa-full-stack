@@ -19,6 +19,16 @@ function round2(value) {
     return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
+function parseJsonField(value, fallback) {
+    if (value == null) return fallback;
+    if (Array.isArray(value) || typeof value === "object") return value;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return fallback;
+    }
+}
+
 /**
  * Reads the GST section saved by the admin Settings tab. Falls back to
  * DEFAULT_GST if the table or the row isn't there, so checkout keeps working
@@ -29,7 +39,7 @@ async function getGstSettings() {
         const result = await pool.query(
             "SELECT data FROM store_settings WHERE section = 'gst-settings'"
         );
-        return { ...DEFAULT_GST, ...(result.rows[0]?.data || {}) };
+        return { ...DEFAULT_GST, ...parseJsonField(result.rows[0]?.data, {}) };
     } catch (error) {
         console.warn("GST settings unavailable, using defaults:", error.message);
         return DEFAULT_GST;

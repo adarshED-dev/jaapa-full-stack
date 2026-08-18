@@ -24,6 +24,95 @@ const { publicUploadUrl } = require("../services/uploadUrl");
 const BROCHURE_DIR = path.join(__dirname, "../../uploads/brochure");
 const BROCHURE_SETTINGS_SECTION = "brochure";
 
+function parseJsonField(value, fallback) {
+    if (value == null) return fallback;
+    if (Array.isArray(value) || typeof value === "object") return value;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return fallback;
+    }
+}
+
+function isUniqueViolation(error) {
+    return error?.code === "23505" || error?.code === "ER_DUP_ENTRY";
+}
+
+async function saveSettings(section, data) {
+    const existing = await pool.query("SELECT section FROM store_settings WHERE section = $1", [section]);
+    if (existing.rows.length > 0) {
+        await pool.query(
+            "UPDATE store_settings SET data = $2, updated_at = CURRENT_TIMESTAMP WHERE section = $1",
+            [section, JSON.stringify(data)]
+        );
+        return;
+    }
+
+    await pool.query(
+        "INSERT INTO store_settings (section, data) VALUES ($1, $2)",
+        [section, JSON.stringify(data)]
+    );
+}
+
+async function updateNewsletterLead(customerId, fullName) {
+    await pool.query(
+        `UPDATE customers
+         SET accepts_marketing = TRUE,
+             is_brochure_lead = TRUE,
+             full_name = COALESCE(full_name, $2),
+             source = COALESCE(source, 'brochure'),
+             subscribed_at = COALESCE(subscribed_at, CURRENT_TIMESTAMP),
+             brochure_downloaded_at = CURRENT_TIMESTAMP,
+             brochure_download_count = brochure_download_count + 1,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [customerId, fullName]
+    );
+
+    const result = await pool.query(
+        "SELECT id, email, brochure_download_count FROM customers WHERE id = $1",
+        [customerId]
+    );
+    return result.rows[0];
+}
+
+async function saveNewsletterLead(email, fullName) {
+    const existing = await pool.query(
+        "SELECT id FROM customers WHERE LOWER(email) = $1 ORDER BY created_at ASC LIMIT 1",
+        [email]
+    );
+
+    if (existing.rows.length > 0) {
+        return updateNewsletterLead(existing.rows[0].id, fullName);
+    }
+
+    const id = randomUUID();
+    try {
+        await pool.query(
+            `INSERT INTO customers
+                 (id, email, full_name, accepts_marketing, is_brochure_lead, source,
+                  subscribed_at, brochure_downloaded_at, brochure_download_count)
+             VALUES ($1, $2, $3, TRUE, TRUE, 'brochure',
+                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)`,
+            [id, email, fullName]
+        );
+    } catch (error) {
+        if (!isUniqueViolation(error)) throw error;
+        const retry = await pool.query(
+            "SELECT id FROM customers WHERE LOWER(email) = $1 ORDER BY created_at ASC LIMIT 1",
+            [email]
+        );
+        if (retry.rows.length === 0) throw error;
+        return updateNewsletterLead(retry.rows[0].id, fullName);
+    }
+
+    const result = await pool.query(
+        "SELECT id, email, brochure_download_count FROM customers WHERE id = $1",
+        [id]
+    );
+    return result.rows[0];
+}
+
 /* ------------------------------------------------------------------ */
 /* Per-IP throttle                                                     */
 /* ------------------------------------------------------------------ */
@@ -74,7 +163,7 @@ async function currentBrochure() {
             "SELECT data FROM store_settings WHERE section = $1",
             [BROCHURE_SETTINGS_SECTION]
         );
-        const filename = result.rows[0]?.data?.filename;
+        const filename = parseJsonField(result.rows[0]?.data, {})?.filename;
         if (!filename) return null;
         // A settings row pointing at a file that has since been deleted would
         // otherwise hand out a link that 404s.
@@ -99,30 +188,7 @@ router.post("/subscribe", rateLimit, async (req, res) => {
 
         const fullName = clean(req.body.fullName) || null;
 
-        // ON CONFLICT keeps this idempotent: someone who downloads the
-        // brochure twice is one row with a download count of 2, and an
-        // existing buyer is flagged rather than duplicated.
-        const result = await pool.query(
-            `INSERT INTO customers
-                 (id, email, full_name, accepts_marketing, is_brochure_lead, source,
-                  subscribed_at, brochure_downloaded_at, brochure_download_count)
-             VALUES ($1, $2, $3, TRUE, TRUE, 'brochure',
-                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
-             ON CONFLICT (LOWER(email)) WHERE email IS NOT NULL
-             DO UPDATE SET
-                 accepts_marketing = TRUE,
-                 is_brochure_lead = TRUE,
-                 full_name = COALESCE(customers.full_name, EXCLUDED.full_name),
-                 -- source records where we FIRST met them, so a buyer who
-                 -- later grabs the brochure still reads as a buyer.
-                 source = COALESCE(customers.source, 'brochure'),
-                 subscribed_at = COALESCE(customers.subscribed_at, CURRENT_TIMESTAMP),
-                 brochure_downloaded_at = CURRENT_TIMESTAMP,
-                 brochure_download_count = customers.brochure_download_count + 1,
-                 updated_at = CURRENT_TIMESTAMP
-             RETURNING id, email, brochure_download_count`,
-            [randomUUID(), email, fullName]
-        );
+        const lead = await saveNewsletterLead(email, fullName);
 
         const brochure = await currentBrochure();
 
@@ -131,7 +197,7 @@ router.post("/subscribe", rateLimit, async (req, res) => {
             message: brochure
                 ? "Thanks! Your download is starting."
                 : "Thanks! We'll email your guide shortly.",
-            isReturning: result.rows[0].brochure_download_count > 1,
+            isReturning: lead.brochure_download_count > 1,
             // Absent when no brochure has been uploaded yet — the email is
             // still captured, the UI just doesn't promise a file.
             brochureUrl: brochure ? "/api/newsletter/brochure" : null,
@@ -202,21 +268,12 @@ router.post("/brochure", requireAdmin, (req, res) => {
         try {
             const previous = await currentBrochure();
 
-            await pool.query(
-                `INSERT INTO store_settings (section, data)
-                 VALUES ($1, $2::jsonb)
-                 ON CONFLICT (section)
-                 DO UPDATE SET data = EXCLUDED.data, updated_at = CURRENT_TIMESTAMP`,
-                [
-                    BROCHURE_SETTINGS_SECTION,
-                    JSON.stringify({
-                        filename: req.file.filename,
-                        originalName: req.file.originalname,
-                        size: req.file.size,
-                        uploadedAt: new Date().toISOString(),
-                    }),
-                ]
-            );
+            await saveSettings(BROCHURE_SETTINGS_SECTION, {
+                filename: req.file.filename,
+                originalName: req.file.originalname,
+                size: req.file.size,
+                uploadedAt: new Date().toISOString(),
+            });
 
             // Only after the new one is safely recorded.
             if (previous && previous !== req.file.filename) {
@@ -248,7 +305,7 @@ router.get("/leads", requireAdmin, async (req, res) => {
                     orders_count, total_spent, created_at
              FROM customers
              WHERE is_brochure_lead = TRUE
-             ORDER BY subscribed_at DESC NULLS LAST
+             ORDER BY subscribed_at IS NULL, subscribed_at DESC
              LIMIT 1000`
         );
 
