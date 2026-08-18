@@ -47,7 +47,7 @@ async function getCartWithItems(cartId) {
             p.images,
             p.status
          FROM cart_items ci
-         JOIN products p ON p.id = ci.product_id
+         JOIN products p ON p.id::text = ci.product_id
          WHERE ci.cart_id = $1
          ORDER BY ci.created_at ASC`,
         [cartId]
@@ -79,16 +79,16 @@ router.get("/admin/list", requireAdmin, async (req, res) => {
                 c.id,
                 c.created_at,
                 c.updated_at,
-                CAST(COALESCE(SUM(ci.quantity), 0) AS UNSIGNED) AS item_count,
+                COALESCE(SUM(ci.quantity), 0)::integer AS item_count,
                 COALESCE(SUM(ci.quantity * p.selling_price), 0) AS cart_value,
                 CASE
                     WHEN COALESCE(SUM(ci.quantity), 0) = 0 THEN 'empty'
-                    WHEN c.updated_at < DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 24 HOUR) THEN 'abandoned'
+                    WHEN c.updated_at < CURRENT_TIMESTAMP - INTERVAL '24 hours' THEN 'abandoned'
                     ELSE 'active'
                 END AS cart_status
              FROM carts c
              LEFT JOIN cart_items ci ON ci.cart_id = c.id
-             LEFT JOIN products p ON p.id = ci.product_id
+             LEFT JOIN products p ON p.id::text = ci.product_id
              GROUP BY c.id, c.created_at, c.updated_at
              ORDER BY c.updated_at DESC`
         );
@@ -177,24 +177,15 @@ router.post("/claim", requireCustomer, async (req, res) => {
                 // GREATEST, not a sum: signing in twice with 2 in the guest
                 // cart should leave 2, not 4. Taking the larger of the two
                 // also means nothing a shopper deliberately added is lost.
-                const sourceItems = await client.query(
-                    "SELECT product_id, quantity, created_at, updated_at FROM cart_items WHERE cart_id = $1",
-                    [sourceId]
+                await client.query(
+                    `INSERT INTO cart_items (cart_id, product_id, quantity, created_at, updated_at)
+                     SELECT $1, product_id, quantity, created_at, updated_at
+                     FROM cart_items WHERE cart_id = $2
+                     ON CONFLICT (cart_id, product_id)
+                     DO UPDATE SET quantity = GREATEST(cart_items.quantity, EXCLUDED.quantity),
+                                   updated_at = CURRENT_TIMESTAMP`,
+                    [targetId, sourceId]
                 );
-
-                for (const item of sourceItems.rows) {
-                    await client.query(
-                        `INSERT IGNORE INTO cart_items (cart_id, product_id, quantity, created_at, updated_at)
-                         VALUES ($1, $2, $3, $4, $5)`,
-                        [targetId, item.product_id, item.quantity, item.created_at, item.updated_at]
-                    );
-                    await client.query(
-                        `UPDATE cart_items
-                         SET quantity = GREATEST(quantity, $3), updated_at = CURRENT_TIMESTAMP
-                         WHERE cart_id = $1 AND product_id = $2`,
-                        [targetId, item.product_id, item.quantity]
-                    );
-                }
                 await client.query("DELETE FROM carts WHERE id = $1", [sourceId]);
             }
         }
@@ -242,7 +233,7 @@ router.post("/:cartId/items", async (req, res) => {
         }
 
         const productResult = await client.query(
-            "SELECT id FROM products WHERE id = $1 AND status = 'active'",
+            "SELECT id FROM products WHERE id::text = $1 AND status = 'active'",
             [String(productId)]
         );
         if (productResult.rows.length === 0) {
