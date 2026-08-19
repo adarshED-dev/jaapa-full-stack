@@ -12,4 +12,4 @@ node_modules/
 
 *.log
 npm-debug.log*
-.env
+.env.env
