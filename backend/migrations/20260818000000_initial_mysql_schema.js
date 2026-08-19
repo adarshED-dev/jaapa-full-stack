@@ -1,3 +1,6 @@
+const fs = require("fs");
+const path = require("path");
+
 const CHARSET = "utf8mb4";
 const COLLATE = "utf8mb4_unicode_ci";
 
@@ -58,7 +61,66 @@ async function ensureIndex(knex, tableName, indexName, createSql) {
     await knex.raw(createSql);
 }
 
+function isPostgresql(knex) {
+    return ["pg", "postgres", "postgresql"].includes(knex.client.config.client);
+}
+
+async function runSqlFile(knex, filename) {
+    const sql = fs.readFileSync(path.join(__dirname, "../sql", filename), "utf8");
+    await knex.raw(sql);
+}
+
+async function ensurePostgresProducts(knex) {
+    await knex.raw(`
+        CREATE TABLE IF NOT EXISTS products (
+            id VARCHAR PRIMARY KEY,
+            title VARCHAR(255) NOT NULL,
+            tagline VARCHAR(255),
+            description TEXT,
+            handle VARCHAR(255),
+            vendor VARCHAR(255),
+            selling_price NUMERIC(12,2) NOT NULL DEFAULT 0,
+            compare_price NUMERIC(12,2),
+            quantity INTEGER,
+            available BOOLEAN NOT NULL DEFAULT TRUE,
+            status VARCHAR(24) NOT NULL DEFAULT 'active',
+            tags JSONB,
+            low_stock_alert INTEGER,
+            sku VARCHAR(120),
+            images JSONB,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    `);
+}
+
+async function runPostgresBaseline(knex) {
+    await ensurePostgresProducts(knex);
+
+    for (const filename of [
+        "admin-auth-schema.sql",
+        "orders-schema.sql",
+        "cart-schema.sql",
+        "wishlist-schema.sql",
+        "customer-auth-schema.sql",
+        "product-variants.sql",
+        "products-updated-at.sql",
+        "store-settings.sql",
+        "account-linking.sql",
+        "newsletter-schema.sql",
+        "shiprocket-fulfilment.sql",
+        "admin-owner-lock.sql",
+    ]) {
+        await runSqlFile(knex, filename);
+    }
+}
+
 exports.up = async function up(knex) {
+    if (isPostgresql(knex)) {
+        await runPostgresBaseline(knex);
+        return;
+    }
+
     await ensureTable(knex, "admin_users", (table) => {
         uuidPrimary(table);
         table.string("email", 255).notNullable();
@@ -150,7 +212,8 @@ exports.up = async function up(knex) {
 
     await ensureTable(knex, "customer_otp_codes", (table) => {
         uuidPrimary(table);
-        table.string("phone", 10).notNullable();
+        table.string("phone", 10).nullable();
+        table.string("email", 255).nullable();
         table.string("code_hash", 128).notNullable();
         table.timestamp("expires_at").notNullable();
         table.integer("attempts").notNullable().defaultTo(0);
@@ -299,6 +362,7 @@ exports.up = async function up(knex) {
     await ensureIndex(knex, "customers", "customers_phone_key", "CREATE UNIQUE INDEX customers_phone_key ON customers (phone)");
     await ensureIndex(knex, "customers", "customers_brochure_lead_idx", "CREATE INDEX customers_brochure_lead_idx ON customers (is_brochure_lead)");
     await ensureIndex(knex, "customer_otp_codes", "customer_otp_phone_idx", "CREATE INDEX customer_otp_phone_idx ON customer_otp_codes (phone, created_at DESC)");
+    await ensureIndex(knex, "customer_otp_codes", "customer_otp_email_idx", "CREATE INDEX customer_otp_email_idx ON customer_otp_codes (email, created_at DESC)");
     await ensureIndex(knex, "customer_otp_codes", "customer_otp_expires_idx", "CREATE INDEX customer_otp_expires_idx ON customer_otp_codes (expires_at)");
     await ensureIndex(knex, "customer_sessions", "customer_sessions_token_hash_key", "CREATE UNIQUE INDEX customer_sessions_token_hash_key ON customer_sessions (token_hash)");
     await ensureIndex(knex, "customer_sessions", "customer_sessions_customer_id_idx", "CREATE INDEX customer_sessions_customer_id_idx ON customer_sessions (customer_id)");

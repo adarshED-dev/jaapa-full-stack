@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
+const { runMigrations } = require("./migrations/runMigrations");
 
 const app = express();
 
@@ -13,19 +14,36 @@ app.set("trust proxy", 1);
 // The admin portal sends its refresh cookie with credentials: true, and a
 // wildcard origin is not allowed with credentials — so origins are listed.
 // Add production URLs via ALLOWED_ORIGINS="https://a.com,https://b.com".
+const configuredOrigins = (process.env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean);
+
 const ALLOWED_ORIGINS = [
     "http://localhost:5173", // storefront (vite default)
     "http://127.0.0.1:5173",
     "http://localhost:5174", // admin portal (see admin/vite.config.js)
     "http://127.0.0.1:5174",
-    ...(process.env.ALLOWED_ORIGINS || "").split(",").map((o) => o.trim()).filter(Boolean),
+    ...configuredOrigins,
 ];
+
+const isProduction = process.env.NODE_ENV === "production";
+const LOOPBACK_ORIGIN_REGEX = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/;
+
+function isAllowedOrigin(origin) {
+    if (!origin) return true;
+    if (ALLOWED_ORIGINS.includes(origin)) return true;
+
+    // Vite automatically moves to the next free port (5175, 5176, ...). Keep
+    // that ergonomic in local development without opening production CORS.
+    return !isProduction && LOOPBACK_ORIGIN_REGEX.test(origin);
+}
 
 app.use(
     cors({
         origin(origin, callback) {
             // No origin = curl, Postman, server-to-server (Razorpay webhook).
-            if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+            if (isAllowedOrigin(origin)) return callback(null, true);
             callback(new Error(`Origin ${origin} is not allowed`));
         },
         credentials: true,
@@ -57,6 +75,17 @@ app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 
 const PORT = Number(process.env.PORT || 5000);
 
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
+async function startServer() {
+    try {
+        await runMigrations();
+        app.listen(PORT, () => {
+            console.log(`Server running on port ${PORT}`);
+        });
+    } catch (error) {
+        console.error("Unable to start server because database migrations failed:");
+        console.error(error);
+        process.exit(1);
+    }
+}
+
+startServer();

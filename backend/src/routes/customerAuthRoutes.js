@@ -1,7 +1,7 @@
-// Customer sign-in by mobile OTP.
+// Customer sign-in by email OTP.
 //
-//   POST /api/auth/request-otp   { phone }         -> { expiresInSeconds, mockCode? }
-//   POST /api/auth/verify-otp    { phone, code }   -> { accessToken, customer }
+//   POST /api/auth/request-otp   { email }       -> { expiresInSeconds, otpLength }
+//   POST /api/auth/verify-otp    { email, code } -> { accessToken, customer }
 //   POST /api/auth/refresh       (refresh cookie)  -> { accessToken, customer }
 //   POST /api/auth/logout        (refresh cookie)
 //   POST /api/auth/logout-all    (bearer)
@@ -9,7 +9,7 @@
 //   PATCH /api/auth/me           (bearer)  name / email / marketing opt-in
 //   GET  /api/auth/orders        (bearer)  the signed-in customer's own orders
 //
-// Signing in creates the customer if this is a new number — there is no
+// Signing in creates the customer if this is a new email — there is no
 // separate sign-up step.
 
 const express = require("express");
@@ -21,12 +21,11 @@ const { EMAIL_RE, clean } = require("../services/validation");
 const { toPublicOrder } = require("../services/orderService");
 const {
     AuthError,
-    OTP_MOCK,
-    normalisePhone,
-    formatPhone,
+    normaliseEmail,
+    formatDestination,
     issueOtp,
     verifyOtp,
-    findOrCreateCustomerByPhone,
+    findOrCreateCustomer,
     findCustomerById,
     registerLogin,
     toPublicCustomer,
@@ -53,13 +52,20 @@ function clientIp(req) {
     return (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.ip || null;
 }
 
+function readOtpDestination(body = {}) {
+    const email = normaliseEmail(body.email || body.identifier);
+    if (!email) throw new AuthError(400, "Enter a valid email address", "INVALID_EMAIL");
+    return { email };
+}
+
 /* ------------------------------------------------------------------ */
 /* Per-IP throttle                                                     */
 /* ------------------------------------------------------------------ */
 
-// The per-number limits in customerAuth stop one phone being hammered. This
-// stops one machine walking through a list of numbers. In-memory is fine for
-// a single process; move to Redis before running more than one.
+// The per-destination limits in customerAuth stop one phone/email being
+// hammered. This stops one machine walking through a list of destinations.
+// In-memory is fine for a single process; move to Redis before running more
+// than one.
 const RATE_WINDOW_MS = 15 * 60 * 1000;
 const RATE_MAX = 30;
 const hits = new Map();
@@ -99,23 +105,19 @@ function rateLimit(req, res, next) {
 
 router.post("/request-otp", rateLimit, async (req, res) => {
     try {
-        const phone = normalisePhone(req.body.phone);
-        if (!phone) {
-            throw new AuthError(400, "Enter a valid 10-digit Indian mobile number", "INVALID_PHONE");
-        }
+        const destination = readOtpDestination(req.body);
 
-        const result = await issueOtp(phone, { ip: clientIp(req) });
+        const result = await issueOtp(destination, { ip: clientIp(req) });
 
         res.json({
             success: true,
-            message: `Code sent to +91 ${formatPhone(phone)}`,
-            phone,
+            message: `Code sent to ${formatDestination(destination)}`,
+            channel: destination.email ? "email" : "phone",
+            phone: destination.phone || null,
+            email: destination.email || null,
             expiresInSeconds: result.expiresInSeconds,
             resendInSeconds: result.resendInSeconds,
-            // Development only. With OTP_MOCK=false this is absent and the
-            // code exists nowhere but the SMS.
-            mockCode: result.mockCode,
-            mock: OTP_MOCK,
+            otpLength: result.otpLength,
         });
     } catch (error) {
         sendError(res, error, "Unable to send a code right now");
@@ -128,19 +130,16 @@ router.post("/request-otp", rateLimit, async (req, res) => {
 
 router.post("/verify-otp", rateLimit, async (req, res) => {
     try {
-        const phone = normalisePhone(req.body.phone);
-        if (!phone) {
-            throw new AuthError(400, "Enter a valid 10-digit Indian mobile number", "INVALID_PHONE");
-        }
+        const destination = readOtpDestination(req.body);
 
         const code = String(req.body.code || "").trim();
-        if (!/^\d{4,8}$/.test(code)) {
-            throw new AuthError(400, "Enter the code from your SMS", "INVALID_CODE");
+        if (!/^\d{4}$/.test(code)) {
+            throw new AuthError(400, "Enter the 4-digit OTP code", "INVALID_CODE");
         }
 
-        await verifyOtp(phone, code);
+        await verifyOtp(destination, code);
 
-        const { customer, created } = await findOrCreateCustomerByPhone(phone);
+        const { customer, created } = await findOrCreateCustomer(destination);
         await registerLogin(customer.id);
 
         const { token: refreshToken } = await createSession(customer.id, {
@@ -235,8 +234,8 @@ router.get("/me", requireCustomer, (req, res) => {
     res.json({ success: true, customer: req.customer });
 });
 
-// What a first-time customer fills in after signing in — the OTP only ever
-// gives us a phone number.
+// What a first-time customer fills in after signing in — OTP may only give us
+// an email address.
 router.patch("/me", requireCustomer, async (req, res) => {
     try {
         const fullName = req.body.fullName === undefined ? undefined : clean(req.body.fullName);
@@ -252,14 +251,13 @@ router.patch("/me", requireCustomer, async (req, res) => {
 
         // COALESCE keeps a field untouched when the request didn't mention it,
         // so a form that only edits the name can't blank out the email.
-        const result = await pool.query(
+        await pool.query(
             `UPDATE customers
              SET full_name = COALESCE($2, full_name),
                  email = COALESCE($3, email),
                  accepts_marketing = COALESCE($4, accepts_marketing),
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1
-             RETURNING *`,
+             WHERE id = $1`,
             [
                 req.customer.id,
                 fullName === undefined || fullName === "" ? null : fullName,
@@ -268,10 +266,11 @@ router.patch("/me", requireCustomer, async (req, res) => {
             ]
         );
 
+        const result = await pool.query("SELECT * FROM customers WHERE id = $1", [req.customer.id]);
         res.json({ success: true, customer: toPublicCustomer(result.rows[0]) });
     } catch (error) {
         // customers_email_key: this address already belongs to another account.
-        if (error.code === "23505") {
+        if (error.code === "23505" || error.code === "ER_DUP_ENTRY") {
             return res.status(409).json({
                 success: false,
                 message: "That email is already used by another account",

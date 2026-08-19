@@ -171,8 +171,7 @@ router.get("/", requireAdmin, async (req, res) => {
     }
 });
 
-// Hands a confirmed order to Shiprocket. Not wired to real credentials yet —
-// see src/services/shiprocket.js — so this refuses cleanly with a 501 until
+// Hands a confirmed order to Shiprocket. This refuses cleanly with a 501 until
 // SHIPROCKET_EMAIL/SHIPROCKET_PASSWORD are set, rather than pretending an
 // order shipped when nothing actually happened.
 router.post("/:id/ship", requireAdmin, async (req, res) => {
@@ -184,8 +183,9 @@ router.post("/:id/ship", requireAdmin, async (req, res) => {
         if (order.status !== "confirmed") {
             throw new HttpError(409, "Only confirmed orders can be shipped.");
         }
-        if (order.fulfilment_status !== "unfulfilled") {
-            throw new HttpError(409, `This order is already ${order.fulfilment_status}.`);
+        const fulfilmentStatus = order.fulfilment_status || "unfulfilled";
+        if (fulfilmentStatus !== "unfulfilled") {
+            throw new HttpError(409, `This order is already ${fulfilmentStatus}.`);
         }
 
         if (!shiprocket.isConfigured()) {
@@ -211,13 +211,26 @@ router.post("/:id/ship", requireAdmin, async (req, res) => {
 
         await pool.query(
             `UPDATE orders
-             SET fulfilment_status = 'processing',
+             SET fulfilment_status = $4,
                  shiprocket_order_id = $2,
                  shiprocket_shipment_id = $3,
+                 awb_code = $5,
+                 courier_name = $6,
+                 tracking_url = $7,
+                 shipped_at = COALESCE($8, shipped_at),
                  fulfilment_error = NULL,
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = $1`,
-            [order.id, shipment.shiprocketOrderId, shipment.shipmentId]
+            [
+                order.id,
+                shipment.shiprocketOrderId,
+                shipment.shipmentId,
+                shipment.awbCode ? "shipped" : "processing",
+                shipment.awbCode,
+                shipment.courierName,
+                shipment.trackingUrl,
+                shipment.awbCode ? new Date() : null,
+            ]
         );
         const updated = await pool.query("SELECT * FROM orders WHERE id = $1", [order.id]);
 

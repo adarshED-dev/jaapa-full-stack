@@ -1,11 +1,11 @@
--- Customer sign-in by mobile OTP.
+-- Customer sign-in by mobile/email OTP.
 --
 -- Run after orders-schema.sql, which creates the `customers` table these
 -- sessions point at:
 --   psql -d <your-db> -f sql/customer-auth-schema.sql
 --
 -- Customers have no password. Proving they can receive a code on their phone
--- IS the credential, so the security lives in this table: codes are stored
+-- or email IS the credential, so the security lives in this table: codes are stored
 -- hashed, expire in minutes, and are counted so a 4-digit code can't be
 -- brute-forced.
 
@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS customer_otp_codes (
 
     -- Canonical 10-digit form, so 9876543210 / +919876543210 / 09876543210
     -- are one person and can't each hold their own code.
-    phone VARCHAR(10) NOT NULL,
+    phone VARCHAR(10),
+    email VARCHAR(255),
 
     -- SHA-256 of the code, peppered with JWT_SECRET. A database dump must not
     -- hand out live login codes. (SHA-256 rather than bcrypt on purpose: the
@@ -29,8 +30,9 @@ CREATE TABLE IF NOT EXISTS customer_otp_codes (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Every lookup is "the newest live code for this number".
+-- Every lookup is "the newest live code for this phone/email".
 CREATE INDEX IF NOT EXISTS customer_otp_phone_idx ON customer_otp_codes (phone, created_at DESC);
+CREATE INDEX IF NOT EXISTS customer_otp_email_idx ON customer_otp_codes (email, created_at DESC);
 CREATE INDEX IF NOT EXISTS customer_otp_expires_idx ON customer_otp_codes (expires_at);
 
 -- One row per signed-in device, same model as admin_sessions: only the
